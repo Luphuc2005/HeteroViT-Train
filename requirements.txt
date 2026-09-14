@@ -1,0 +1,7 @@
+# Heterogeneous Vision Transformer Training Dependencies
+tensorflow>=2.15.0
+numpy>=1.24.0
+pyyaml>=6.0
+psutil>=5.9.0
+pandas>=2.0.0
+matplotlib>=3.7.0

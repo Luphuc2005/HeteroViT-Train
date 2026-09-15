@@ -3,11 +3,24 @@ import os
 import csv
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
 import yaml
 
 from src.metrics.system_metrics import collect_run_metadata
+
+# Vietnam Timezone (UTC+7, Asia/Ho_Chi_Minh)
+VN_TZ = timezone(timedelta(hours=7))
+
+
+class VietnamTimeFormatter(logging.Formatter):
+    """Custom formatter ensuring log timestamps always reflect Vietnam Time (UTC+7)."""
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=VN_TZ)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 class ExperimentLogger:
@@ -18,8 +31,8 @@ class ExperimentLogger:
         self.exp_name = config.get("experiment", {}).get("name", "experiment")
         base_output_dir = config.get("logging", {}).get("output_dir", "./results")
 
-        # Generate unique timestamped directory: results/<exp_name>_YYYYMMDD_HHMMSS
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Generate unique timestamped directory in Vietnam Time: results/<exp_name>_YYYYMMDD_HHMMSS
+        timestamp = datetime.now(VN_TZ).strftime("%Y%m%d_%H%M%S")
         self.run_dir = os.path.join(base_output_dir, f"{self.exp_name}_{timestamp}")
         self.checkpoints_dir = os.path.join(self.run_dir, "checkpoints")
 
@@ -37,7 +50,7 @@ class ExperimentLogger:
         self._init_csv()
 
     def _setup_logger(self):
-        """Sets up Python logger with both StreamHandler and FileHandler."""
+        """Sets up Python logger with both StreamHandler and FileHandler using Vietnam Time."""
         self.logger = logging.getLogger(f"Exp_{self.exp_name}")
         self.logger.setLevel(logging.INFO)
         self.logger.propagate = False
@@ -46,7 +59,7 @@ class ExperimentLogger:
         if self.logger.hasHandlers():
             self.logger.handlers.clear()
 
-        formatter = logging.Formatter(
+        formatter = VietnamTimeFormatter(
             fmt="[%(asctime)s] [%(levelname)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )

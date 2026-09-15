@@ -31,6 +31,7 @@ class CPUTrainer(BaseTrainer):
         self.logger.info(f"Target Epochs: {self.epochs}, Batch Size: {self.batch_size}")
         self.logger.info(f"Steps per epoch: {self.steps_per_epoch}, Val steps: {self.val_steps}")
 
+        train_start_time = time.perf_counter()
         with tf.device("/CPU:0"):
             for epoch in range(1, self.epochs + 1):
                 epoch_start_time = time.perf_counter()
@@ -78,7 +79,7 @@ class CPUTrainer(BaseTrainer):
 
                 # Log metrics to CSV and file
                 self.logger.log_epoch(
-                    epoch=epoch,
+                    epoch=epoch,    
                     train_loss=avg_train_loss,
                     train_accuracy=avg_train_acc,
                     val_loss=val_loss,
@@ -93,6 +94,8 @@ class CPUTrainer(BaseTrainer):
                     self.save_checkpoint("best.weights.h5")
                     self.logger.info(f"New best validation accuracy: {val_acc * 100:.2f}%. Saved best.weights.h5")
 
-                self.save_checkpoint("last.weights.h5")
-
-        self.logger.info("CPU Training finished successfully.")
+        total_train_time = time.perf_counter() - train_start_time
+        self.logger.info(
+            f"CPU Training finished successfully in {total_train_time:.2f}s "
+            f"({total_train_time / 60:.2f} minutes)."
+        )

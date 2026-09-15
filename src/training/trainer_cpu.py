@@ -7,12 +7,13 @@ from src.training.base_trainer import BaseTrainer, train_step
 
 def configure_cpu_runtime(cpu_cfg: dict):
     """Sets CPU threading and thread affinity controls for TensorFlow."""
-    intra_threads = cpu_cfg.get("intra_op_threads", 12)
-    inter_threads = cpu_cfg.get("inter_op_threads", 2)
+    intra_threads = int(cpu_cfg.get("intra_op_threads", 12))
+    inter_threads = int(cpu_cfg.get("inter_op_threads", 2))
 
     try:
         tf.config.threading.set_intra_op_parallelism_threads(intra_threads)
         tf.config.threading.set_inter_op_parallelism_threads(inter_threads)
+        print(f"[Info] TensorFlow CPU threading initialized: intra_op={intra_threads}, inter_op={inter_threads}")
     except RuntimeError as e:
         # Threads already initialized
         print(f"[Warning] Failed setting TF threads: {e}")
@@ -23,8 +24,7 @@ class CPUTrainer(BaseTrainer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cpu_cfg = self.config.get("cpu", {})
-        configure_cpu_runtime(cpu_cfg)
+        # Note: configure_cpu_runtime is already performed early in train.py before any TF ops
 
     def train(self):
         self.logger.info("Starting CPU Training Loop...")

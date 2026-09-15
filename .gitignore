@@ -31,7 +31,7 @@ env.bak/
 venv.bak/
 
 # Datasets (Never commit large raw data)
-data/
+/data/
 *.tar.gz
 *.tar
 *.zip

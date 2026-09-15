@@ -35,6 +35,9 @@ def main():
     # If CPU mode, ensure GPU visibility is disabled in environment if not already
     if mode == "cpu":
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        # Initialize TensorFlow CPU threading BEFORE any ops, seed, or dataset initialization
+        from src.training.trainer_cpu import configure_cpu_runtime
+        configure_cpu_runtime(config.get("cpu", {}))
 
     # Set random seed early for reproducibility across all libraries
     seed = int(config.get("seed", 42))

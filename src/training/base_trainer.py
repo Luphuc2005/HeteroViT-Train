@@ -1,4 +1,5 @@
 """Base Trainer with custom training loop, gradient extraction, and metric tracking."""
+import os
 import time
 from typing import Dict, Any, Tuple
 import tensorflow as tf
@@ -21,8 +22,9 @@ def get_optimizer(training_cfg: Dict[str, Any]) -> tf.keras.optimizers.Optimizer
         raise ValueError(f"Unsupported optimizer: {opt_name}")
 
 
+@tf.function
 def train_step(
-    model: tf.keras.Model,
+    model: tf.keras.Model, # model ViT
     optimizer: tf.keras.optimizers.Optimizer,
     images: tf.Tensor,
     labels: tf.Tensor,

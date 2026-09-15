@@ -21,7 +21,7 @@ class PatchEmbedding(layers.Layer):
         self.cls_token = None
         self.pos_embedding = None
 
-    def build(self, input_shape):
+    def build(self, input_shape): #Keras gọi hàm này khi layer lần đầu nhận input. mục đihcs là tạo các trainable w
         self.cls_token = self.add_weight(
             name="cls_token",
             shape=(1, 1, self.embed_dim),
@@ -37,7 +37,7 @@ class PatchEmbedding(layers.Layer):
         super().build(input_shape)
 
     def call(self, images, training=False):
-        batch_size = tf.shape(images)[0]
+        batch_size = tf.shape(images)[0] #hàm lấy batch size để dens
 
         # Extract patches using tf.image.extract_patches
         # Output shape: [batch, num_patches_h, num_patches_w, patch_size * patch_size * channels]

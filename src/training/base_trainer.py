@@ -13,7 +13,16 @@ def get_optimizer(training_cfg: Dict[str, Any]) -> tf.keras.optimizers.Optimizer
     wd = float(training_cfg.get("weight_decay", 1e-4))
 
     if opt_name == "adamw":
-        return tf.keras.optimizers.AdamW(learning_rate=lr, weight_decay=wd)
+        if hasattr(tf.keras.optimizers, "AdamW"):
+            return tf.keras.optimizers.AdamW(learning_rate=lr, weight_decay=wd)
+        elif hasattr(tf.keras.optimizers, "experimental") and hasattr(tf.keras.optimizers.experimental, "AdamW"):
+            return tf.keras.optimizers.experimental.AdamW(learning_rate=lr, weight_decay=wd)
+        else:
+            try:
+                import tensorflow_addons as tfa
+                return tfa.optimizers.AdamW(learning_rate=lr, weight_decay=wd)
+            except ImportError:
+                return tf.keras.optimizers.Adam(learning_rate=lr)
     elif opt_name == "adam":
         return tf.keras.optimizers.Adam(learning_rate=lr)
     elif opt_name == "sgd":

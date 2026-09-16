@@ -1,0 +1,37 @@
+experiment:
+  name: cpu_24cores_b128_20e
+
+mode: cpu
+
+seed: 42
+
+dataset:
+  name: cifar10
+  data_dir: ./data/cifar10
+  num_classes: 10
+
+model:
+  name: vit_tiny
+  image_size: 32
+  patch_size: 4
+  embed_dim: 192
+  depth: 6
+  num_heads: 3
+  mlp_dim: 768
+  dropout: 0.1
+
+training:
+  epochs: 20
+  batch_size: 128
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+
+cpu:
+  physical_cores: 24
+  intra_op_threads: 24
+  inter_op_threads: 2
+
+logging:
+  log_interval: 50
+  output_dir: ./results

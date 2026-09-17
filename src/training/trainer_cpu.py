@@ -5,10 +5,16 @@ import tensorflow as tf
 from src.training.base_trainer import BaseTrainer, train_step
 
 
-def configure_cpu_runtime(cpu_cfg: dict):
+def configure_cpu_runtime(cpu_cfg: dict = None):
     """Sets CPU threading and thread affinity controls for TensorFlow."""
-    intra_threads = int(cpu_cfg.get("intra_op_threads", 12))
-    inter_threads = int(cpu_cfg.get("inter_op_threads", 2))
+    if cpu_cfg is None:
+        cpu_cfg = {}
+
+    intra_env = os.environ.get("TF_NUM_INTRAOP_THREADS")
+    inter_env = os.environ.get("TF_NUM_INTEROP_THREADS")
+
+    intra_threads = int(intra_env) if intra_env else int(cpu_cfg.get("intra_op_threads", 12))
+    inter_threads = int(inter_env) if inter_env else int(cpu_cfg.get("inter_op_threads", 2))
 
     try:
         tf.config.threading.set_intra_op_parallelism_threads(intra_threads)

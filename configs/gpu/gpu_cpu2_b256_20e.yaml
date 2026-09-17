@@ -1,0 +1,41 @@
+﻿experiment:
+  name: gpu_cpu2_b256_20e
+
+mode: gpu
+
+seed: 42
+
+dataset:
+  name: cifar10
+  data_dir: ./data/cifar10
+  num_classes: 10
+
+model:
+  name: vit_tiny
+  image_size: 32
+  patch_size: 4
+  embed_dim: 192
+  depth: 6
+  num_heads: 3
+  mlp_dim: 768
+  dropout: 0.1
+
+training:
+  epochs: 20
+  batch_size: 256
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+
+cpu:
+  physical_cores: 2
+  intra_op_threads: 2
+  inter_op_threads: 2
+
+gpu:
+  device: /GPU:0
+  memory_growth: true
+
+logging:
+  log_interval: 50
+  output_dir: ./results

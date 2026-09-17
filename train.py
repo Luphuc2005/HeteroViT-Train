@@ -35,7 +35,9 @@ def main():
     # If CPU mode, ensure GPU visibility is disabled in environment if not already
     if mode == "cpu":
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        # Initialize TensorFlow CPU threading BEFORE any ops, seed, or dataset initialization
+
+    # Initialize TensorFlow CPU threading if in CPU mode, if cpu config is present, or if env vars are set
+    if mode == "cpu" or "cpu" in config or "TF_NUM_INTRAOP_THREADS" in os.environ:
         from src.training.trainer_cpu import configure_cpu_runtime
         configure_cpu_runtime(config.get("cpu", {}))
 
@@ -49,7 +51,10 @@ def main():
     from src.models.vit import build_vit_from_config
     from src.metrics.logger import ExperimentLogger
     from src.training.trainer_cpu import CPUTrainer
-    from src.training.trainer_gpu import GPUTrainer
+    from src.training.trainer_gpu import GPUTrainer, configure_gpu_runtime
+
+    if mode == "gpu":
+        configure_gpu_runtime()
 
     # Initialize logger and experiment output directory
     logger = ExperimentLogger(config)

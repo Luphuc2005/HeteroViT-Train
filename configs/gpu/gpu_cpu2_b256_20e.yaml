@@ -1,4 +1,4 @@
-﻿experiment:
+experiment:
   name: gpu_cpu2_b256_20e
 
 mode: gpu
@@ -38,4 +38,4 @@ gpu:
 
 logging:
   log_interval: 50
-  output_dir: ./results
+  output_dir: ./results/gpu_cpu_benchmarks

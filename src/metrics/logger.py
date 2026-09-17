@@ -29,7 +29,7 @@ class ExperimentLogger:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.exp_name = config.get("experiment", {}).get("name", "experiment")
-        base_output_dir = config.get("logging", {}).get("output_dir", "./results")
+        base_output_dir = os.environ.get("OUTPUT_DIR", config.get("logging", {}).get("output_dir", "./results"))
 
         # Generate unique timestamped directory in Vietnam Time: results/<exp_name>_YYYYMMDD_HHMMSS
         timestamp = datetime.now(VN_TZ).strftime("%Y%m%d_%H%M%S")

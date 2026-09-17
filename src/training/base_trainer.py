@@ -14,9 +14,15 @@ def get_optimizer(training_cfg: Dict[str, Any]) -> tf.keras.optimizers.Optimizer
 
     if opt_name == "adamw":
         if hasattr(tf.keras.optimizers, "AdamW"):
-            return tf.keras.optimizers.AdamW(learning_rate=lr, weight_decay=wd)
+            try:
+                return tf.keras.optimizers.AdamW(learning_rate=lr, weight_decay=wd, jit_compile=False)
+            except TypeError:
+                return tf.keras.optimizers.AdamW(learning_rate=lr, weight_decay=wd)
         elif hasattr(tf.keras.optimizers, "experimental") and hasattr(tf.keras.optimizers.experimental, "AdamW"):
-            return tf.keras.optimizers.experimental.AdamW(learning_rate=lr, weight_decay=wd)
+            try:
+                return tf.keras.optimizers.experimental.AdamW(learning_rate=lr, weight_decay=wd, jit_compile=False)
+            except TypeError:
+                return tf.keras.optimizers.experimental.AdamW(learning_rate=lr, weight_decay=wd)
         else:
             try:
                 import tensorflow_addons as tfa

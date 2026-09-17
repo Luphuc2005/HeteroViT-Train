@@ -26,6 +26,39 @@ def parse_args():
     return parser.parse_args()
 
 
+def setup_xla_environment():
+    """Locates and configures CUDA libdevice.10.bc for XLA JIT compilation if needed."""
+    if "XLA_FLAGS" in os.environ and "--xla_gpu_cuda_data_dir" in os.environ["XLA_FLAGS"]:
+        return
+
+    import glob
+    candidates = [
+        "/usr/local/cuda/nvvm/libdevice/libdevice.10.bc",
+        "/usr/local/cuda-*/nvvm/libdevice/libdevice.10.bc",
+        "/usr/lib/nvidia-cuda-toolkit/libdevice/libdevice.10.bc",
+    ]
+    for sp in sys.path:
+        if "site-packages" in sp:
+            candidates.append(os.path.join(sp, "nvidia", "**", "libdevice.10.bc"))
+
+    for pattern in candidates:
+        matches = glob.glob(pattern, recursive=True)
+        if matches:
+            libdevice_path = matches[0]
+            cuda_dir = os.path.dirname(os.path.dirname(os.path.dirname(libdevice_path)))
+            if not os.path.exists(os.path.join(cuda_dir, "nvvm", "libdevice", "libdevice.10.bc")):
+                cuda_dir = os.path.dirname(os.path.dirname(libdevice_path))
+            existing_xla = os.environ.get("XLA_FLAGS", "")
+            os.environ["XLA_FLAGS"] = f"{existing_xla} --xla_gpu_cuda_data_dir={cuda_dir}".strip()
+            try:
+                if not os.path.exists("./libdevice.10.bc"):
+                    os.symlink(libdevice_path, "./libdevice.10.bc")
+            except Exception:
+                pass
+            print(f"[Info] Configured XLA CUDA data dir: {cuda_dir}")
+            break
+
+
 def main():
     args = parse_args()
     config = load_config(args.config)
@@ -35,6 +68,8 @@ def main():
     # If CPU mode, ensure GPU visibility is disabled in environment if not already
     if mode == "cpu":
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    elif mode == "gpu":
+        setup_xla_environment()
 
     # Initialize TensorFlow CPU threading if in CPU mode, if cpu config is present, or if env vars are set
     if mode == "cpu" or "cpu" in config or "TF_NUM_INTRAOP_THREADS" in os.environ:

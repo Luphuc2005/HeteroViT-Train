@@ -154,7 +154,7 @@ class MultiGPUTrainer(BaseTrainer):
             total_samples = 0
             step_count = 0
 
-            for step, (images, labels) in enumerate(self.dist_train_ds.take(self.steps_per_epoch), start=1):
+            for step, (images, labels) in enumerate(self.dist_train_ds, start=1):
                 step_start_time = time.perf_counter()
                 loss, acc = dist_train_step(images, labels)
                 step_time = time.perf_counter() - step_start_time
@@ -174,6 +174,9 @@ class MultiGPUTrainer(BaseTrainer):
                         f"Acc: {avg_step_acc * 100:.2f}% - "
                         f"Step Time: {step_time * 1000:.1f}ms"
                     )
+
+                if step >= self.steps_per_epoch:
+                    break
 
             epoch_time = time.perf_counter() - epoch_start_time
             samples_per_sec = total_samples / max(epoch_time, 1e-6)
@@ -205,7 +208,7 @@ class MultiGPUTrainer(BaseTrainer):
         self.logger.info(f"Multi-GPU Training on {num_replicas} GPUs finished successfully.")
 
     def evaluate(self, dataset, steps: int):
-        if not isinstance(dataset, tf.distribute.DistributedDataset):
+        if hasattr(dataset, "take") or isinstance(dataset, tf.data.Dataset):
             dataset = self.strategy.experimental_distribute_dataset(dataset)
 
         global_batch = float(self.batch_size)
@@ -229,11 +232,13 @@ class MultiGPUTrainer(BaseTrainer):
         total_acc = 0.0
         num_batches = 0
 
-        for images, labels in dataset.take(steps):
+        for images, labels in dataset:
             loss, acc = dist_val_step(images, labels)
             total_loss += float(loss)
             total_acc += float(acc)
             num_batches += 1
+            if steps is not None and num_batches >= steps:
+                break
 
         avg_loss = total_loss / max(num_batches, 1)
         avg_acc = total_acc / max(num_batches, 1)

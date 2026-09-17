@@ -126,7 +126,7 @@ class MultiGPUTrainer(BaseTrainer):
         self.logger.info(f"Per-GPU Local Batch Size: {self.batch_size // num_replicas}")
         self.logger.info(f"Steps per epoch: {self.steps_per_epoch}, Val steps: {self.val_steps}")
 
-        global_batch = float(self.batch_size)
+        global_batch = int(self.batch_size)
 
         def step_fn(images, labels):
             with tf.GradientTape() as tape:
@@ -211,7 +211,7 @@ class MultiGPUTrainer(BaseTrainer):
         if hasattr(dataset, "take") or isinstance(dataset, tf.data.Dataset):
             dataset = self.strategy.experimental_distribute_dataset(dataset)
 
-        global_batch = float(self.batch_size)
+        global_batch = int(self.batch_size)
 
         def val_step_fn(images, labels):
             predictions = self.model(images, training=False)

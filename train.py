@@ -86,10 +86,18 @@ def main():
     from src.models.vit import build_vit_from_config
     from src.metrics.logger import ExperimentLogger
     from src.training.trainer_cpu import CPUTrainer
-    from src.training.trainer_gpu import GPUTrainer, configure_gpu_runtime
+    from src.training.trainer_gpu import GPUTrainer, MultiGPUTrainer, configure_gpu_runtime
 
+    strategy = None
     if mode == "gpu":
         configure_gpu_runtime()
+        gpu_cfg = config.get("gpu", {})
+        num_gpus_cfg = int(gpu_cfg.get("num_gpus", 1))
+        strategy_name = str(gpu_cfg.get("strategy", "")).lower()
+        physical_gpus = tf.config.list_physical_devices("GPU")
+
+        if (num_gpus_cfg > 1 or strategy_name == "mirrored") and len(physical_gpus) > 1:
+            strategy = tf.distribute.MirroredStrategy()
 
     # Initialize logger and experiment output directory
     logger = ExperimentLogger(config)
@@ -120,11 +128,16 @@ def main():
 
     # Build model
     logger.info("Instantiating Vision Transformer model...")
-    model = build_vit_from_config(config)
-
-    # Build model weights with dummy input
-    dummy_input = tf.zeros([1, image_size, image_size, 3], dtype=tf.float32)
-    _ = model(dummy_input, training=False)
+    if strategy is not None:
+        logger.info(f"Using tf.distribute.MirroredStrategy across {strategy.num_replicas_in_sync} GPUs.")
+        with strategy.scope():
+            model = build_vit_from_config(config)
+            dummy_input = tf.zeros([1, image_size, image_size, 3], dtype=tf.float32)
+            _ = model(dummy_input, training=False)
+    else:
+        model = build_vit_from_config(config)
+        dummy_input = tf.zeros([1, image_size, image_size, 3], dtype=tf.float32)
+        _ = model(dummy_input, training=False)
 
     num_params = model.count_params()
     logger.info(f"ViT Model '{model.name}' constructed successfully. Total trainable parameters: {num_params:,}")
@@ -142,16 +155,29 @@ def main():
             logger=logger,
         )
     elif mode == "gpu":
-        trainer = GPUTrainer(
-            model=model,
-            config=config,
-            train_ds=train_ds,
-            val_ds=val_ds,
-            test_ds=test_ds,
-            steps_per_epoch=steps_per_epoch,
-            val_steps=val_steps,
-            logger=logger,
-        )
+        if strategy is not None:
+            trainer = MultiGPUTrainer(
+                strategy=strategy,
+                model=model,
+                config=config,
+                train_ds=train_ds,
+                val_ds=val_ds,
+                test_ds=test_ds,
+                steps_per_epoch=steps_per_epoch,
+                val_steps=val_steps,
+                logger=logger,
+            )
+        else:
+            trainer = GPUTrainer(
+                model=model,
+                config=config,
+                train_ds=train_ds,
+                val_ds=val_ds,
+                test_ds=test_ds,
+                steps_per_epoch=steps_per_epoch,
+                val_steps=val_steps,
+                logger=logger,
+            )
     else:
         raise ValueError(
             f"Unsupported mode: '{mode}'. Must be either 'cpu' or 'gpu'. "

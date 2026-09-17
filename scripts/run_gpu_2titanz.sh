@@ -23,23 +23,75 @@ if [ ! -f "libdevice.10.bc" ]; then
     done
 fi
 
-echo "=========================================================="
-echo "Starting 2-GPU Benchmark Suite: 2x NVIDIA GeForce GTX TITAN Z"
-echo "CUDA_VISIBLE_DEVICES: '$CUDA_VISIBLE_DEVICES'"
-echo "Benchmarks: Global Batch 128 -> Global Batch 256 (20 epochs)"
-echo "=========================================================="
+TARGET=${1:-all}
 
-echo ""
-echo ">>> [1/2] Đang chạy Global Batch 128 (mỗi GPU nhận 64 samples)..."
-python train.py --config configs/gpu/gpu_2titanz_b128_20e.yaml
+run_1() {
+    echo ""
+    echo "=========================================================="
+    echo ">>> [RUN 1/3] 2 GPU Titan Z | 2 CPU Cores | Global Batch: 128 (Baseline Scaling)"
+    echo "=========================================================="
+    export OMP_NUM_THREADS=2
+    export MKL_NUM_THREADS=2
+    export OPENBLAS_NUM_THREADS=2
+    export NUMEXPR_NUM_THREADS=2
+    export TF_NUM_INTRAOP_THREADS=2
+    export TF_NUM_INTEROP_THREADS=2
+    taskset -c 0-1 python train.py --config configs/gpu/gpu_2titanz_b128_20e.yaml
+}
 
-echo ""
-echo ">>> [2/2] Đang chạy Global Batch 256 (mỗi GPU nhận 128 samples)..."
-python train.py --config configs/gpu/gpu_2titanz_b256_20e.yaml
+run_2() {
+    echo ""
+    echo "=========================================================="
+    echo ">>> [RUN 2/3] 2 GPU Titan Z | 2 CPU Cores | Global Batch: 256 (Xem 2 Cores đủ không)"
+    echo "=========================================================="
+    export OMP_NUM_THREADS=2
+    export MKL_NUM_THREADS=2
+    export OPENBLAS_NUM_THREADS=2
+    export NUMEXPR_NUM_THREADS=2
+    export TF_NUM_INTRAOP_THREADS=2
+    export TF_NUM_INTEROP_THREADS=2
+    taskset -c 0-1 python train.py --config configs/gpu/gpu_2titanz_b256_20e.yaml
+}
 
-echo ""
-echo "=========================================================="
-echo "HOÀN THÀNH CẢ 2 BÀI BENCHMARK 2 GPU TITAN Z!"
-echo "Kết quả Batch 128 lưu tại: results/gpu_multi_benchmarks/b128/"
-echo "Kết quả Batch 256 lưu tại: results/gpu_multi_benchmarks/b256/"
-echo "=========================================================="
+run_3() {
+    echo ""
+    echo "=========================================================="
+    echo ">>> [RUN 3/3] 2 GPU Titan Z | 4 CPU Cores | Global Batch: 256 (Kiểm tra Loader Bottleneck)"
+    echo "=========================================================="
+    export OMP_NUM_THREADS=4
+    export MKL_NUM_THREADS=4
+    export OPENBLAS_NUM_THREADS=4
+    export NUMEXPR_NUM_THREADS=4
+    export TF_NUM_INTRAOP_THREADS=4
+    export TF_NUM_INTEROP_THREADS=2
+    taskset -c 0-3 python train.py --config configs/gpu/gpu_2titanz_c4_b256_20e.yaml
+}
+
+case "$TARGET" in
+    1)
+        run_1
+        ;;
+    2)
+        run_2
+        ;;
+    3)
+        run_3
+        ;;
+    all)
+        run_1
+        run_2
+        run_3
+        echo ""
+        echo "=========================================================="
+        echo "HOÀN TẤT CẢ 3 BENCHMARK 2 GPU TITAN Z THÀNH CÔNG!"
+        echo "Kết quả lưu riêng tại:"
+        echo " - Run 1: results/gpu_multi_benchmarks/run1_c2_b128/"
+        echo " - Run 2: results/gpu_multi_benchmarks/run2_c2_b256/"
+        echo " - Run 3: results/gpu_multi_benchmarks/run3_c4_b256/"
+        echo "=========================================================="
+        ;;
+    *)
+        echo "Lựa chọn không hợp lệ: '$TARGET'. Hãy dùng: 1, 2, 3, hoặc all."
+        exit 1
+        ;;
+esac

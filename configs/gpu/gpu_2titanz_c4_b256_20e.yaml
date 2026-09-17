@@ -1,5 +1,5 @@
 experiment:
-  name: gpu_2titanz_b256_20e
+  name: gpu_2titanz_c4_b256_20e
 
 mode: gpu
 
@@ -22,15 +22,15 @@ model:
 
 training:
   epochs: 20
-  batch_size: 256          # Global batch size = 256 (đối ứng 1 GPU batch 256)
-  per_gpu_batch_size: 128  # Mỗi GPU Titan Z nhận 128 samples
+  batch_size: 256          # Global batch = 256 (mỗi GPU nhận 128)
+  per_gpu_batch_size: 128
   optimizer: adamw
-  learning_rate: 0.001     # Giữ nguyên LR
+  learning_rate: 0.001
   weight_decay: 0.0001
 
 cpu:
-  physical_cores: 2        # CPU loader: 2 cores
-  intra_op_threads: 2
+  physical_cores: 4        # CPU loader: 4 cores
+  intra_op_threads: 4
   inter_op_threads: 2
 
 gpu:
@@ -41,4 +41,4 @@ gpu:
 
 logging:
   log_interval: 50
-  output_dir: ./results/gpu_multi_benchmarks/run2_c2_b256
+  output_dir: ./results/gpu_multi_benchmarks/run3_c4_b256

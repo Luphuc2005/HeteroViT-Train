@@ -28,6 +28,11 @@ training:
   learning_rate: 0.001    # Giữ nguyên LR do global batch size không đổi
   weight_decay: 0.0001
 
+cpu:
+  physical_cores: 2       # CPU loader: 2 cores
+  intra_op_threads: 2
+  inter_op_threads: 2
+
 gpu:
   num_gpus: 2
   devices: ["/GPU:0", "/GPU:1"]
@@ -36,4 +41,4 @@ gpu:
 
 logging:
   log_interval: 50
-  output_dir: ./results/gpu_multi_benchmarks/b128
+  output_dir: ./results/gpu_multi_benchmarks/run1_c2_b128

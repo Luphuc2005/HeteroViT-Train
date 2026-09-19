@@ -31,6 +31,8 @@ env.bak/
 venv.bak/
 
 # Datasets (Never commit large raw data)
+data/
+data/**
 /data/
 *.tar.gz
 *.tar
@@ -38,13 +40,18 @@ venv.bak/
 *.npz
 cifar-10-batches-py/
 
-# Experiment results and checkpoints (Keep directory structure with .gitkeep)
-results/*_*
-results/*_*/**
-results/**/*.h5
-results/**/*.weights.h5
-results/**/*.log
-results/**/*.csv
+# Experiment results and checkpoints
+results/
+results/**
+checkpoints/
+checkpoints/**
+*.h5
+*.weights.h5
+*.log
+*.csv
+*.pt
+*.pth
+*.ckpt
 !results/**/.gitkeep
 
 # IDE and OS

@@ -1,0 +1,61 @@
+experiment:
+  name: mpi_hetero_static_5nodes
+
+mode: mpi
+
+seed: 42
+
+dataset:
+  name: cifar10
+  data_dir: /home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/data/cifar10
+  num_classes: 10
+
+model:
+  name: vit_tiny
+  image_size: 32
+  patch_size: 4
+  embed_dim: 192
+  depth: 6
+  num_heads: 3
+  mlp_dim: 768
+  dropout: 0.1
+
+training:
+  epochs: 20
+  global_batch_size: 640
+
+  # Static workload allocation per rank (lab01: 384, lab02: 64, lab03: 48, lab04: 48, lab05: 96)
+  rank_batch_sizes: [384, 64, 48, 48, 96]
+  workload:
+    lab01: 384
+    lab02: 64
+    lab03: 48
+    lab04: 48
+    lab05: 96
+
+  # Gradient accumulation on GPU (Rank 0 - lab01) to fit within 6GB VRAM
+  grad_accum:
+    enabled: true
+    micro_batch_size: 128  # 384 // 128 = 3 accumulation steps
+
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  sync_interval: 20       # Verify grad and weight synchronization every 20 steps
+  sync_tolerance: 0.00001 # 1e-5 tolerance for synchronization verification
+  drop_remainder: true    # Drop partial last batch to ensure identical steps per epoch
+
+cpu:
+  intra_op_threads: 4
+  inter_op_threads: 2
+
+gpu:
+  num_gpus: 2
+  devices: ["/GPU:0", "/GPU:1"]
+  strategy: mirrored
+  memory_growth: true
+
+logging:
+  log_interval: 10
+  output_dir: /home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results
+

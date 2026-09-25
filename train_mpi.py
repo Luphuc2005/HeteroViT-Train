@@ -88,6 +88,26 @@ def parse_args():
         default=None,
         help="Starting epoch number when resuming. Auto-detected from train.csv if omitted.",
     )
+    parser.add_argument(
+        "--sync-mode",
+        type=str,
+        default=None,
+        choices=["gradient_allreduce", "local_steps"],
+        help="Synchronization mode: 'gradient_allreduce' (every step) or 'local_steps' (every K steps)",
+    )
+    parser.add_argument(
+        "--local-steps",
+        type=str,
+        default=None,
+        help="Number of local steps K before synchronizing (e.g. 1, 5, 10, 20, or 'full_epoch')",
+    )
+    parser.add_argument(
+        "--opt-sync",
+        type=str,
+        default=None,
+        choices=["preserve_local", "average"],
+        help="Optimizer state policy: 'preserve_local' (default) or 'average'",
+    )
     return parser.parse_args()
 
 
@@ -97,6 +117,19 @@ from src.utils.config import load_config
 from src.utils.seed import set_seed
 
 config = load_config(args.config)
+
+# Apply CLI overrides to training configuration
+if "training" not in config:
+    config["training"] = {}
+
+if args.sync_mode is not None:
+    config["training"]["sync_mode"] = args.sync_mode
+if args.local_steps is not None:
+    ls_val = args.local_steps.strip()
+    config["training"]["local_steps"] = "full_epoch" if ls_val.lower() == "full_epoch" else int(ls_val)
+if args.opt_sync is not None:
+    config["training"]["optimizer_state_sync"] = args.opt_sync
+
 seed = int(config.get("seed", 42))
 set_seed(seed)
 
@@ -287,12 +320,15 @@ if rank == 0:
         )
     print("-" * 80, flush=True)
     batch_detail = f"sum({rank_batch_sizes})" if rank_batch_sizes else f"local_batch={local_batch_size} * {world_size} ranks"
+    sync_mode_str = training_cfg.get("sync_mode", "gradient_allreduce")
+    local_steps_str = training_cfg.get("local_steps", 10)
+    print(f"  Sync Mode         : {sync_mode_str} (local_steps K={local_steps_str})" if sync_mode_str == "local_steps" else f"  Sync Mode         : {sync_mode_str} (every step)", flush=True)
     print(f"  Global Batch Size : {global_batch} ({batch_detail})", flush=True)
     print(f"  Steps per Epoch   : {steps_per_epoch} (drop_remainder={drop_remainder})", flush=True)
     print(f"  Sync Check Policy : Every {training_cfg.get('sync_interval', 20)} steps (tolerance: {sync_tolerance:.1e})", flush=True)
     print("=" * 80, flush=True)
     logger.info(f"Loaded config from: {args.config}")
-    logger.info(f"Execution: MPI Distributed Baseline ({world_size} ranks) | Seed: {seed}")
+    logger.info(f"Execution: MPI Distributed ({world_size} ranks) | Seed: {seed} | Mode: {sync_mode_str}")
 
 comm.Barrier()
 
@@ -378,4 +414,6 @@ if args.max_steps is None:
     test_loss, test_acc = trainer.evaluate(test_ds, steps=int(10000 / local_batch_size) + 1)
     if rank == 0:
         logger.info(f"Final Test Evaluation -> Loss: {test_loss:.4f}, Accuracy: {test_acc * 100:.2f}%")
+        if hasattr(trainer, "total_train_time"):
+            logger.info(f"Total Training Time : {trainer.total_train_time:.2f}s ({trainer.total_train_time / 60:.2f} minutes)")
 

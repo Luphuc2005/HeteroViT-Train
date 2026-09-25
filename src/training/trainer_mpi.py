@@ -86,6 +86,13 @@ class MPITrainer(BaseTrainer):
         self.num_gpus = len(tf.config.list_physical_devices("GPU")) if self.rank == 0 else 0
         self.device_str = f"{self.num_gpus}xGPU" if (self.rank == 0 and self.num_gpus > 0) else "CPU"
 
+        # Phase 1: Local-Step Synchronization configuration
+        self.sync_mode = str(training_cfg.get("sync_mode", "gradient_allreduce")).lower()
+        ls_cfg = training_cfg.get("local_steps", 10)
+        self.local_steps = "full_epoch" if str(ls_cfg).lower() == "full_epoch" else int(ls_cfg)
+        self.opt_state_sync = str(training_cfg.get("optimizer_state_sync", "preserve_local")).lower()
+        self.total_train_time = 0.0
+
         self.timeline_csv = None
         if self.rank == 0 and hasattr(self.logger, "run_dir"):
             self.timeline_csv = os.path.join(self.logger.run_dir, "ranks_timeline.csv")
@@ -105,6 +112,28 @@ class MPITrainer(BaseTrainer):
                         "idle_wait_ms",
                         "idle_pct",
                         "is_straggler",
+                    ])
+
+        self.rounds_csv = None
+        if self.rank == 0 and hasattr(self.logger, "run_dir") and self.sync_mode == "local_steps":
+            self.rounds_csv = os.path.join(self.logger.run_dir, "rounds_timeline.csv")
+            if not os.path.exists(self.rounds_csv):
+                with open(self.rounds_csv, "w", newline="", encoding="utf-8") as f:
+                    import csv
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "epoch",
+                        "round",
+                        "rank",
+                        "local_steps",
+                        "batch_size",
+                        "samples_processed",
+                        "compute_time",
+                        "wait_time",
+                        "sync_time",
+                        "round_time",
+                        "throughput",
+                        "train_loss",
                     ])
 
         # Re-initialize optimizer and loss inside strategy scope if rank 0 has MirroredStrategy
@@ -220,8 +249,30 @@ class MPITrainer(BaseTrainer):
 
                 strategy.run(apply_fn, args=tuple(global_grads))
 
+            # Phase 1: Local training step for local_steps mode (forward + backward + optimizer update)
+            def replica_local_train_step(images, labels):
+                with tf.GradientTape() as tape:
+                    predictions = model(images, training=True)
+                    per_example_loss = loss_fn(labels, predictions)
+                    loss = tf.nn.compute_average_loss(per_example_loss, global_batch_size=local_batch)
+                grads = tape.gradient(loss, model.trainable_variables)
+                optimizer.apply_gradients(zip(grads, model.trainable_variables))
+                pred_labels = tf.argmax(predictions, axis=-1, output_type=labels.dtype)
+                acc = tf.reduce_mean(tf.cast(tf.equal(pred_labels, labels), tf.float32))
+                return loss, acc
+
+            @tf.function
+            def local_train_step(images, labels):
+                per_replica_losses, per_replica_accs = strategy.run(
+                    replica_local_train_step, args=(images, labels)
+                )
+                local_loss = strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses, axis=None)
+                local_acc = strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_accs, axis=None)
+                return local_loss, local_acc
+
             self._compute_local_grads = compute_local_grads
             self._apply_global_grads = apply_global_grads
+            self._local_train_step = local_train_step
 
         else:
             model = self.model
@@ -268,36 +319,61 @@ class MPITrainer(BaseTrainer):
             def apply_global_grads(global_grads):
                 optimizer.apply_gradients(zip(global_grads, model.trainable_variables))
 
+            @tf.function
+            def local_train_step(images, labels):
+                with tf.GradientTape() as tape:
+                    predictions = model(images, training=True)
+                    loss = loss_fn(labels, predictions)
+                grads = tape.gradient(loss, model.trainable_variables)
+                optimizer.apply_gradients(zip(grads, model.trainable_variables))
+                pred_labels = tf.argmax(predictions, axis=-1, output_type=labels.dtype)
+                acc = tf.reduce_mean(tf.cast(tf.equal(pred_labels, labels), tf.float32))
+                return loss, acc
+
             self._compute_local_grads = compute_local_grads
             self._apply_global_grads = apply_global_grads
+            self._local_train_step = local_train_step
 
     def allreduce_gradients(self, local_grads: List[tf.Tensor]) -> List[tf.Tensor]:
-        """AllReduces weighted local gradients across all ranks via MPI SUM.
+        """AllReduce all weighted local gradients in one fused MPI buffer.
         
         Formula:
           global_gradient = sum_{i} (local_batch_i * local_grad_i) / global_batch_size
         """
-        global_grads = []
         local_batch = float(self.local_batch_size)
         global_batch = float(self.global_batch_size)
+        flat_parts = []
+        grad_metadata = []
 
-        for lg in local_grads:
-            if lg is None:
-                global_grads.append(None)
+        # Pack every non-None gradient into one contiguous float32 buffer. Keep
+        # enough metadata to restore the original list, shapes, and dtypes.
+        for index, local_grad in enumerate(local_grads):
+            if local_grad is None:
                 continue
 
-            # Weight local gradient by number of samples processed on this rank
-            lg_np = lg.numpy().astype(np.float32)
-            weighted_lg_np = lg_np * local_batch
-            summed_np = np.empty_like(weighted_lg_np)
+            grad_np = local_grad.numpy().astype(np.float32, copy=False)
+            flat_parts.append(grad_np.reshape(-1))
+            grad_metadata.append(
+                (index, grad_np.shape, grad_np.size, local_grad.dtype)
+            )
 
-            # Step 7: MPI.Allreduce(weighted_local_gradient, SUM)
-            self.comm.Allreduce(weighted_lg_np, summed_np, op=MPI.SUM)
+        global_grads = [None] * len(local_grads)
+        if not flat_parts:
+            return global_grads
 
-            # global_gradient = summed_weighted_gradients / global_batch_size (640)
-            global_g_np = summed_np / global_batch
-            global_g = tf.convert_to_tensor(global_g_np, dtype=lg.dtype)
-            global_grads.append(global_g)
+        fused_local = np.concatenate(flat_parts).astype(np.float32, copy=False)
+        fused_local *= local_batch
+        fused_sum = np.empty_like(fused_local)
+
+        # One blocking collective per training step instead of one per tensor.
+        self.comm.Allreduce(fused_local, fused_sum, op=MPI.SUM)
+        fused_global = fused_sum / global_batch
+
+        offset = 0
+        for index, shape, size, dtype in grad_metadata:
+            grad_np = fused_global[offset:offset + size].reshape(shape)
+            global_grads[index] = tf.convert_to_tensor(grad_np, dtype=dtype)
+            offset += size
 
         return global_grads
 
@@ -359,7 +435,320 @@ class MPITrainer(BaseTrainer):
 
         return max_diff
 
-    def train(self):
+    def synchronize_model_delta(self, w_start: List[np.ndarray]) -> Tuple[float, float]:
+        """Synchronizes model weights across all ranks using Delta representation (Phase 1 Baseline).
+
+        Formula:
+          Delta_i = W_local_i - W_start
+          Delta_global = (Delta_0 + Delta_1 + Delta_2 + Delta_3 + Delta_4) / 5
+          W_global = W_start + Delta_global
+
+        Returns:
+          (sync_time, max_weight_diff)
+        """
+        t_sync_start = time.perf_counter()
+
+        # 1. Compute local Delta_i = W_local_i - W_start
+        w_local = self.model.get_weights()
+        delta_i = [wl - ws for wl, ws in zip(w_local, w_start)]
+
+        # 2. Flatten Delta_i for efficient single MPI AllReduce
+        flat_delta = np.concatenate([d.ravel() for d in delta_i]).astype(np.float32)
+        summed_delta = np.empty_like(flat_delta)
+
+        # 3. MPI AllReduce SUM / 5
+        self.comm.Allreduce(flat_delta, summed_delta, op=MPI.SUM)
+        global_flat_delta = summed_delta / float(self.world_size)
+
+        # 4. Compute W_global = W_start + Delta_global
+        w_global = []
+        offset = 0
+        for ws in w_start:
+            size = ws.size
+            chunk = global_flat_delta[offset:offset + size].reshape(ws.shape).astype(ws.dtype)
+            w_global.append(ws + chunk)
+            offset += size
+
+        # 5. Set W_global to model
+        self.model.set_weights(w_global)
+
+        # 6. Verify consistency across all ranks: max_weight_diff
+        flat_w = np.concatenate([w.ravel() for w in w_global]).astype(np.float32)
+        max_buf = np.empty_like(flat_w)
+        min_buf = np.empty_like(flat_w)
+
+        self.comm.Barrier()
+        self.comm.Allreduce(flat_w, max_buf, op=MPI.MAX)
+        self.comm.Allreduce(flat_w, min_buf, op=MPI.MIN)
+        self.comm.Barrier()
+
+        diff_arr = np.abs(max_buf - min_buf)
+        max_weight_diff = float(np.max(diff_arr))
+
+        if max_weight_diff > self.sync_tolerance:
+            offset = 0
+            for var, ws in zip(self.model.weights, w_start):
+                size = ws.size
+                layer_diff = float(np.max(diff_arr[offset:offset + size]))
+                offset += size
+                if layer_diff > self.sync_tolerance:
+                    print(
+                        f"[CONSISTENCY FAILED] Rank {self.rank}: Layer '{var.name}' "
+                        f"max difference: {layer_diff:.8e} > {self.sync_tolerance:.1e}",
+                        flush=True,
+                    )
+            raise RuntimeError(
+                f"[CONSISTENCY FAILED] Rank {self.rank} weight mismatch: {max_weight_diff:.8e} > {self.sync_tolerance:.1e}"
+            )
+
+        # 7. Optimizer state handling
+        if self.opt_state_sync == "average":
+            for v in self.optimizer.variables():
+                if "iteration" not in v.name.lower():
+                    val = v.numpy().astype(np.float32)
+                    summed_v = np.empty_like(val)
+                    self.comm.Allreduce(val, summed_v, op=MPI.SUM)
+                    avg_v = (summed_v / float(self.world_size)).astype(v.dtype.as_numpy_dtype)
+                    v.assign(avg_v)
+
+        sync_time = time.perf_counter() - t_sync_start
+        return sync_time, max_weight_diff
+
+    def _train_local_steps(self):
+        """Executes Local-Step Synchronization training loop (Phase 1 Baseline)."""
+        import math
+
+        if isinstance(self.local_steps, str) and self.local_steps.lower() == "full_epoch":
+            K = self.steps_per_epoch
+        else:
+            K = int(self.local_steps)
+            if K >= self.steps_per_epoch:
+                K = self.steps_per_epoch
+
+        total_rounds_per_epoch = math.ceil(self.steps_per_epoch / K)
+
+        if self.rank == 0:
+            self.logger.info("=" * 88)
+            self.logger.info(" HETEROVIT-MPI: LOCAL-STEP SYNCHRONIZATION BASELINE (PHASE 1)")
+            self.logger.info("=" * 88)
+            self.logger.info(f"  Sync Mode          : local_steps")
+            self.logger.info(f"  Local Steps K      : {K} ({'full_epoch' if K == self.steps_per_epoch else f'{K} steps/round'})")
+            self.logger.info(f"  Rounds per Epoch   : {total_rounds_per_epoch}")
+            self.logger.info(f"  Steps per Epoch    : {self.steps_per_epoch}")
+            opt_desc = (
+                "local momentum/variance preserved across rounds"
+                if self.opt_state_sync == "preserve_local"
+                else "momentum/variance averaged across ranks at sync boundary"
+            )
+            self.logger.info(f"  Optimizer Policy   : {self.opt_state_sync} ({opt_desc})")
+            self.logger.info(f"  Local Batch Size   : {self.local_batch_size} (Global Batch: {self.global_batch_size})")
+            self.logger.info(f"  Sync Tolerance     : {self.sync_tolerance:.1e}")
+            self.logger.info("=" * 88)
+
+        total_steps_executed = 0
+        total_rounds_executed = 0
+        train_start_time = time.perf_counter()
+
+        for epoch in range(self.start_epoch, self.epochs + 1):
+            epoch_start_time = time.perf_counter()
+            total_train_loss = 0.0
+            total_train_acc = 0.0
+            round_in_epoch = 0
+            step_in_epoch = 0
+
+            train_iter = iter(self.dist_train_ds)
+
+            while step_in_epoch < self.steps_per_epoch:
+                round_in_epoch += 1
+                total_rounds_executed += 1
+                target_k = min(K, self.steps_per_epoch - step_in_epoch)
+
+                t_round_start = time.perf_counter()
+
+                # Snapshot W_start at start of round
+                w_start = [w.copy() for w in self.model.get_weights()]
+
+                # --- 1. LOCAL STEPS (NO COMMUNICATION) ---
+                t_comp_start = time.perf_counter()
+                round_loss_sum = 0.0
+                round_acc_sum = 0.0
+                actual_k = 0
+
+                for _ in range(target_k):
+                    step_in_epoch += 1
+                    total_steps_executed += 1
+                    actual_k += 1
+                    try:
+                        images, labels = next(train_iter)
+                    except StopIteration:
+                        train_iter = iter(self.dist_train_ds)
+                        images, labels = next(train_iter)
+
+                    loss, acc = self._local_train_step(images, labels)
+                    round_loss_sum += float(loss)
+                    round_acc_sum += float(acc)
+
+                    if self.max_steps is not None and total_steps_executed >= self.max_steps:
+                        break
+
+                compute_time = time.perf_counter() - t_comp_start
+                round_loss = round_loss_sum / max(actual_k, 1)
+                round_acc = round_acc_sum / max(actual_k, 1)
+
+                total_train_loss += round_loss_sum
+                total_train_acc += round_acc_sum
+
+                # --- 2. WAIT TIME MEASUREMENT (BARRIER) ---
+                t_wait_start = time.perf_counter()
+                self.comm.Barrier()
+                wait_time = time.perf_counter() - t_wait_start
+
+                # --- 3. MODEL DELTA MERGE & SET WEIGHTS ---
+                sync_time, max_weight_diff = self.synchronize_model_delta(w_start)
+
+                round_time = time.perf_counter() - t_round_start
+                samples_processed = actual_k * self.local_batch_size
+                round_tput = (actual_k * self.global_batch_size) / max(round_time, 1e-6)
+
+                # Per-rank round metrics gathering
+                round_info = {
+                    "epoch": epoch,
+                    "round": round_in_epoch,
+                    "rank": self.rank,
+                    "host": self.hostname,
+                    "device": self.device_str,
+                    "local_steps": actual_k,
+                    "batch_size": self.local_batch_size,
+                    "samples_processed": samples_processed,
+                    "compute_time": compute_time,
+                    "wait_time": wait_time,
+                    "sync_time": sync_time,
+                    "round_time": round_time,
+                    "throughput": round_tput,
+                    "train_loss": round_loss,
+                    "train_acc": round_acc,
+                    "max_weight_diff": max_weight_diff,
+                }
+                all_round_info = self.comm.gather(round_info, root=0)
+
+                if self.rank == 0 and all_round_info:
+                    # Write to rounds_timeline.csv
+                    if hasattr(self, "rounds_csv") and self.rounds_csv:
+                        with open(self.rounds_csv, "a", newline="", encoding="utf-8") as f:
+                            import csv
+                            writer = csv.writer(f)
+                            for r_info in sorted(all_round_info, key=lambda x: x["rank"]):
+                                writer.writerow([
+                                    r_info["epoch"],
+                                    r_info["round"],
+                                    r_info["rank"],
+                                    r_info["local_steps"],
+                                    r_info["batch_size"],
+                                    r_info["samples_processed"],
+                                    f"{r_info['compute_time']:.4f}",
+                                    f"{r_info['wait_time']:.4f}",
+                                    f"{r_info['sync_time']:.4f}",
+                                    f"{r_info['round_time']:.4f}",
+                                    f"{r_info['throughput']:.2f}",
+                                    f"{r_info['train_loss']:.5f}",
+                                ])
+
+                    step_start = step_in_epoch - actual_k + 1
+                    step_end = step_in_epoch
+
+                    self.logger.info("=" * 88)
+                    self.logger.info(
+                        f" [ROUND {round_in_epoch:02d}/{total_rounds_per_epoch:02d} (Epoch {epoch:02d})] "
+                        f"K={actual_k} | Steps: {step_start:02d}-{step_end:02d}/{self.steps_per_epoch:02d} | "
+                        f"Round Time: {round_time:6.2f}s | Tput: {round_tput:5.1f} img/s | "
+                        f"max_weight_diff: {max_weight_diff:.2e}"
+                    )
+                    self.logger.info("-" * 88)
+                    sorted_rounds = sorted(all_round_info, key=lambda x: x["compute_time"])
+                    for r_info in sorted_rounds:
+                        r = r_info["rank"]
+                        h = r_info["host"]
+                        dev = r_info["device"]
+                        c_s = r_info["compute_time"]
+                        w_s = r_info["wait_time"]
+                        pct = (w_s / (c_s + w_s) * 100.0) if (c_s + w_s) > 0 else 0.0
+                        if w_s <= 0.05:
+                            status = f"STRAGGLER (Compute: {c_s:6.2f}s - Bắt cả cụm chờ)"
+                        elif r == 0:
+                            status = f"Compute: {c_s:6.2f}s | Wait: {w_s:6.2f}s ({pct:4.1f}% idle)"
+                        else:
+                            status = f"Compute: {c_s:6.2f}s | Wait: {w_s:6.2f}s ({pct:4.1f}% idle)"
+                        self.logger.info(f"   * Rank {r} [{h:9s} - {dev:5s}]: {status}")
+                    self.logger.info(f"   Sync Time: {sync_time*1000:6.1f}ms | Loss: {round_loss:.4f} | Acc: {round_acc*100:5.2f}%")
+                    self.logger.info("=" * 88)
+
+                if self.max_steps is not None and total_steps_executed >= self.max_steps:
+                    if self.rank == 0:
+                        self.logger.info(f"Reached max_steps={self.max_steps}. Stopping training loop.")
+                    break
+
+            # End of epoch calculations
+            train_time = time.perf_counter() - epoch_start_time
+            avg_train_loss = total_train_loss / max(step_in_epoch, 1)
+            avg_train_acc = total_train_acc / max(step_in_epoch, 1)
+            total_samples = step_in_epoch * self.global_batch_size
+            train_tput = total_samples / max(train_time, 1e-6)
+
+            # Validation phase
+            is_smoke = self.max_steps is not None and self.max_steps <= 10
+            val_steps_to_run = min(2, self.val_steps) if is_smoke else self.val_steps
+            val_start_time = time.perf_counter()
+            val_loss, val_acc = self.evaluate(self.dist_val_ds, val_steps_to_run)
+            val_time = time.perf_counter() - val_start_time
+            total_epoch_time = train_time + val_time
+
+            if self.rank == 0:
+                is_best = val_acc > self.best_val_accuracy
+                if is_best:
+                    self.best_val_accuracy = val_acc
+                    self.save_checkpoint("best.weights.h5")
+                self.save_checkpoint("last.weights.h5")
+
+                try:
+                    curr_lr = float(self.optimizer.learning_rate.numpy())
+                except Exception:
+                    try:
+                        curr_lr = float(self.optimizer.learning_rate)
+                    except Exception:
+                        curr_lr = 1e-3
+
+                self.logger.log_epoch(
+                    epoch=epoch,
+                    train_loss=avg_train_loss,
+                    train_accuracy=avg_train_acc,
+                    val_loss=val_loss,
+                    val_accuracy=val_acc,
+                    epoch_time=total_epoch_time,
+                    samples_per_sec=train_tput,
+                    train_time=train_time,
+                    val_time=val_time,
+                    learning_rate=curr_lr,
+                    total_epochs=self.epochs,
+                    is_best=is_best,
+                    best_val_acc=self.best_val_accuracy,
+                    cluster_info=f"local_steps (K={K}) | {self.global_batch_size} (128x{self.world_size})",
+                )
+
+            import gc
+            gc.collect()
+            self.comm.Barrier()
+
+            if self.max_steps is not None and total_steps_executed >= self.max_steps:
+                break
+
+        self.total_train_time = time.perf_counter() - train_start_time
+        if self.rank == 0:
+            self.logger.info(
+                f"MPI Training finished successfully in {self.total_train_time:.2f}s "
+                f"({self.total_train_time / 60:.2f} minutes)."
+            )
+
+    def _train_gradient_allreduce(self):
         """Executes synchronous distributed training loop across epochs."""
         if self.rank == 0:
             self.logger.info("Starting Synchronous MPI Training Loop...")
@@ -623,12 +1012,19 @@ class MPITrainer(BaseTrainer):
             if self.max_steps is not None and total_steps_executed >= self.max_steps:
                 break
 
-        total_train_time = time.perf_counter() - train_start_time
+        self.total_train_time = time.perf_counter() - train_start_time
         if self.rank == 0:
             self.logger.info(
-                f"MPI Training finished successfully in {total_train_time:.2f}s "
-                f"({total_train_time / 60:.2f} minutes)."
+                f"MPI Training finished successfully in {self.total_train_time:.2f}s "
+                f"({self.total_train_time / 60:.2f} minutes)."
             )
+
+    def train(self):
+        """Executes training loop based on configured sync_mode."""
+        if self.sync_mode == "local_steps":
+            self._train_local_steps()
+        else:
+            self._train_gradient_allreduce()
 
     def evaluate(self, dataset, steps: int) -> Tuple[float, float]:
         """Evaluates model performance on validation/test dataset."""

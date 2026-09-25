@@ -1,0 +1,48 @@
+experiment:
+  name: mpi_local_steps_k05_5nodes
+
+mode: mpi
+
+seed: 42
+
+dataset:
+  name: cifar10
+  data_dir: /home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/data/cifar10
+  num_classes: 10
+
+model:
+  name: vit_tiny
+  image_size: 32
+  patch_size: 4
+  embed_dim: 192
+  depth: 6
+  num_heads: 3
+  mlp_dim: 768
+  dropout: 0.1
+
+training:
+  epochs: 20
+  batch_size: 128         # Local batch size per MPI rank (128 on all 5 ranks, global batch = 640)
+  sync_mode: local_steps  # 'local_steps' (Phase 1)
+  local_steps: 5          # K=5 local steps before model synchronization
+  optimizer_state_sync: preserve_local
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  sync_interval: 20
+  sync_tolerance: 0.00001
+  drop_remainder: true
+
+cpu:
+  intra_op_threads: 4
+  inter_op_threads: 2
+
+gpu:
+  num_gpus: 2
+  devices: ["/GPU:0", "/GPU:1"]
+  strategy: mirrored
+  memory_growth: true
+
+logging:
+  log_interval: 10
+  output_dir: /home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results

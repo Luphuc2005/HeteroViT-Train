@@ -61,3 +61,4 @@ checkpoints/**
 *.swo
 .DS_Store
 Thumbs.db
+libdevice.10.bc

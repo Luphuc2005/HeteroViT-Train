@@ -65,6 +65,16 @@ def main():
 
     mode = config.get("mode", "cpu").lower()
 
+    # If Joint mode (CPU + GPU concurrent workers), dispatch directly to JointTrainer
+    if mode in ["joint", "hybrid"]:
+        # Prevent the coordinator process from claiming GPU VRAM
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+        from src.training.trainer_joint import JointTrainer
+        trainer = JointTrainer(config)
+        trainer.train()
+        return
+
     # If CPU mode, ensure GPU visibility is disabled in environment if not already
     if mode == "cpu":
         os.environ["CUDA_VISIBLE_DEVICES"] = ""

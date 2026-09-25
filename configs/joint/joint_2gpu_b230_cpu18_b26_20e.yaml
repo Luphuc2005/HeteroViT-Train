@@ -1,0 +1,45 @@
+experiment:
+  name: joint_2gpu_b230_cpu18_b26_20e
+
+mode: joint
+
+seed: 42
+
+dataset:
+  name: cifar10
+  data_dir: ./data/cifar10
+  num_classes: 10
+
+model:
+  name: vit_tiny
+  image_size: 32
+  patch_size: 4
+  embed_dim: 192
+  depth: 6
+  num_heads: 3
+  mlp_dim: 768
+  dropout: 0.1
+
+training:
+  epochs: 20
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+
+joint:
+  gpu_worker:
+    num_gpus: 2
+    cuda_devices: "0,1"
+    batch_size: 230          # 115 per Titan Z GPU (Total GPU = 230)
+    cpu_cores: [0, 1, 2, 3]  # 4 CPU cores dedicated to GPU host
+    intra_op_threads: 4
+    inter_op_threads: 2
+  cpu_worker:
+    batch_size: 26           # CPU batch = 26 (Total Global Batch = 230 + 26 = 256)
+    cpu_cores: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]  # 18 physical CPU cores
+    intra_op_threads: 18
+    inter_op_threads: 2
+
+logging:
+  log_interval: 25
+  output_dir: ./results/joint_benchmarks/isobatch256_gpu230_cpu26

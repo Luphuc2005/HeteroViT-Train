@@ -3,6 +3,8 @@ from src.training.base_trainer import BaseTrainer, train_step, val_step, get_opt
 from src.training.trainer_cpu import CPUTrainer
 from src.training.trainer_gpu import GPUTrainer
 
+from src.training.trainer_joint import JointTrainer
+
 __all__ = [
     "BaseTrainer",
     "train_step",
@@ -10,4 +12,5 @@ __all__ = [
     "get_optimizer",
     "CPUTrainer",
     "GPUTrainer",
+    "JointTrainer",
 ]

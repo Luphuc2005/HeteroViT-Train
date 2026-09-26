@@ -193,7 +193,8 @@ def _gpu_worker_proc(
             from_logits=True,
             reduction=tf.keras.losses.Reduction.NONE,
         )
-        dummy_d2h_gpu = tf.zeros((total_params,), dtype=tf.float32)
+        is_profiling = bool(config.get("profiling", False) or "profile" in config.get("experiment", {}).get("name", ""))
+        dummy_d2h_gpu = tf.zeros((total_params,), dtype=tf.float32) if is_profiling else None
 
     # 4. Attach Shared Memory
     shm_gpu = shared_memory.SharedMemory(name=shm_gpu_name)
@@ -252,7 +253,7 @@ def _gpu_worker_proc(
             for g in grads
         ]
         flat_gpu_grad = tf.concat([tf.reshape(g, [-1]) for g in reduced_grads], axis=0)
-        return total_loss, total_acc, flat_gpu_grad
+        return total_loss, total_acc, flat_gpu_grad * tf.cast(w_gpu, tf.float32)
 
     @tf.function
     def dist_apply_grads(flat_global_grads):
@@ -303,14 +304,15 @@ def _gpu_worker_proc(
             "combined_throughput", "train_loss", "train_acc"
         ])
 
-    breakdown_csv_path = os.path.join(results_dir, "step_breakdown.csv")
-    with open(breakdown_csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "epoch", "step", "step_wall_ms", "gpu_comp_ms", "gpu_d2h_ms", "gpu_idle_ms",
-            "cpu_step_ms", "cpu_idle_ms", "grad_merge_ms", "h2d_ms", "gpu_apply_ms",
-            "cpu_apply_ms", "end_barrier_ms", "data_iter_ms"
-        ])
+    if is_profiling:
+        breakdown_csv_path = os.path.join(results_dir, "step_breakdown.csv")
+        with open(breakdown_csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "epoch", "step", "step_wall_ms", "gpu_comp_ms", "gpu_d2h_ms", "gpu_idle_ms",
+                "cpu_step_ms", "cpu_idle_ms", "grad_merge_ms", "h2d_ms", "gpu_apply_ms",
+                "cpu_apply_ms", "end_barrier_ms", "data_iter_ms"
+            ])
 
     print(f"[GPU Worker] Ready with 2 Titan Z GPUs ({num_replicas} replicas). Global Batch: {gpu_batch_size}")
     sync_barrier.wait()  # Initial sync with CPU worker
@@ -346,6 +348,9 @@ def _gpu_worker_proc(
 
         t_data_prev = time.perf_counter()
 
+        epoch_step_rows = []
+        epoch_breakdown_rows = []
+
         for step, (images, labels) in enumerate(dist_gpu_ds, start=1):
             t_data_iter_ms = (time.perf_counter() - t_data_prev) * 1000.0
 
@@ -356,18 +361,21 @@ def _gpu_worker_proc(
 
             step_wall_start = time.perf_counter()
 
-            # A. Compute local GPU gradients (Fused GPU tensor, single D2H copy)
+            # A. Compute local GPU gradients (Fused GPU tensor, single D2H copy pre-scaled)
             t_comp_start = time.perf_counter()
             gpu_loss, gpu_acc, flat_gpu_grad = dist_compute_grads(images, labels)
-            flat_gpu[:] = flat_gpu_grad.numpy()
+            flat_global[:] = flat_gpu_grad.numpy()
             t_comp_end = time.perf_counter()
             gpu_step_ms = (t_comp_end - t_comp_start) * 1000.0
 
-            # Measure pure D2H DMA transfer speed of 10.9MB using pre-allocated dummy
-            t_dma_0 = time.perf_counter()
-            _ = dummy_d2h_gpu.numpy()
-            gpu_d2h_ms = (time.perf_counter() - t_dma_0) * 1000.0
-            gpu_pure_comp_ms = max(gpu_step_ms - gpu_d2h_ms, 0.0)
+            if is_profiling and dummy_d2h_gpu is not None:
+                t_dma_0 = time.perf_counter()
+                _ = dummy_d2h_gpu.numpy()
+                gpu_d2h_ms = (time.perf_counter() - t_dma_0) * 1000.0
+                gpu_pure_comp_ms = max(gpu_step_ms - gpu_d2h_ms, 0.0)
+            else:
+                gpu_d2h_ms = 0.0
+                gpu_pure_comp_ms = gpu_step_ms
 
             # B. Signal GPU done and wait for CPU
             gpu_done_event.set()
@@ -382,9 +390,9 @@ def _gpu_worker_proc(
             cpu_loss = step_metrics_arr[2]
             cpu_acc = step_metrics_arr[3]
 
-            # D. Weighted aggregation of gradients
+            # D. Fast In-Place Vector Addition (1.08 ms)
             t_merge_0 = time.perf_counter()
-            flat_global[:] = w_gpu * flat_gpu[:] + w_cpu * flat_cpu[:]
+            np.add(flat_global, flat_cpu, out=flat_global)
             agg_done_event.set()
             grad_merge_ms = (time.perf_counter() - t_merge_0) * 1000.0
 
@@ -395,8 +403,9 @@ def _gpu_worker_proc(
 
             t_gapply_0 = time.perf_counter()
             dist_apply_grads(flat_global_tensor)
-            # Sync GPU stream by reading 1 scalar to capture true GPU apply time
-            _ = model.trainable_variables[0].read_value()[0].numpy()
+            if is_profiling:
+                # Sync GPU stream by reading 1 scalar to capture true GPU apply time
+                _ = model.trainable_variables[0].read_value()[0].numpy()
             gpu_apply_ms = (time.perf_counter() - t_gapply_0) * 1000.0
 
             # Step boundary sync
@@ -434,18 +443,15 @@ def _gpu_worker_proc(
             bd_end_barrier.append(end_barrier_ms)
             bd_data_iter.append(t_data_iter_ms)
 
-            # Save step metrics
-            with open(step_csv_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    epoch, step, f"{gpu_step_ms:.1f}", f"{cpu_step_ms:.1f}",
-                    f"{gpu_idle_ms:.1f}", f"{cpu_idle_ms:.1f}", f"{step_wall_ms:.1f}",
-                    f"{step_throughput:.1f}", f"{joint_loss:.4f}", f"{joint_acc * 100:.2f}"
-                ])
+            # Buffer step metrics in RAM to eliminate per-step disk I/O flushes
+            epoch_step_rows.append([
+                epoch, step, f"{gpu_step_ms:.1f}", f"{cpu_step_ms:.1f}",
+                f"{gpu_idle_ms:.1f}", f"{cpu_idle_ms:.1f}", f"{step_wall_ms:.1f}",
+                f"{step_throughput:.1f}", f"{joint_loss:.4f}", f"{joint_acc * 100:.2f}"
+            ])
 
-            with open(breakdown_csv_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow([
+            if is_profiling:
+                epoch_breakdown_rows.append([
                     epoch, step, f"{step_wall_ms:.2f}", f"{gpu_pure_comp_ms:.2f}",
                     f"{gpu_d2h_ms:.2f}", f"{gpu_idle_ms:.2f}", f"{cpu_step_ms:.2f}",
                     f"{cpu_idle_ms:.2f}", f"{grad_merge_ms:.2f}", f"{h2d_ms:.2f}",
@@ -464,6 +470,16 @@ def _gpu_worker_proc(
 
             t_data_prev = time.perf_counter()
 
+        # Batch-write buffered CSV metrics at end of epoch
+        with open(step_csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerows(epoch_step_rows)
+
+        if is_profiling and epoch_breakdown_rows:
+            with open(breakdown_csv_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerows(epoch_breakdown_rows)
+
         epoch_time = time.perf_counter() - epoch_start_time
         combined_throughput = total_epoch_samples / max(epoch_time, 1e-6)
         avg_train_loss = total_loss_accum / max(num_steps, 1)
@@ -472,42 +488,43 @@ def _gpu_worker_proc(
         avg_cpu_step = np.mean(cpu_step_times)
         avg_gpu_idle = np.mean(gpu_idle_times)
 
-        # Compute decomposition averages for epoch
-        m_wall = float(np.mean(bd_step_wall))
-        m_gcomp = float(np.mean(bd_gpu_comp))
-        m_gd2h = float(np.mean(bd_gpu_d2h))
-        m_gidle = float(np.mean(bd_gpu_idle))
-        m_cstep = float(np.mean(bd_cpu_step))
-        m_cidle = float(np.mean(bd_cpu_idle))
-        m_merge = float(np.mean(bd_merge))
-        m_h2d = float(np.mean(bd_h2d))
-        m_gapply = float(np.mean(bd_gpu_apply))
-        m_capply = float(np.mean(bd_cpu_apply))
-        m_endb = float(np.mean(bd_end_barrier))
-        m_data = float(np.mean(bd_data_iter))
-        m_noncomp = m_wall - (m_gcomp + m_gd2h + m_gidle)
+        if is_profiling:
+            # Compute decomposition averages for epoch
+            m_wall = float(np.mean(bd_step_wall))
+            m_gcomp = float(np.mean(bd_gpu_comp))
+            m_gd2h = float(np.mean(bd_gpu_d2h))
+            m_gidle = float(np.mean(bd_gpu_idle))
+            m_cstep = float(np.mean(bd_cpu_step))
+            m_cidle = float(np.mean(bd_cpu_idle))
+            m_merge = float(np.mean(bd_merge))
+            m_h2d = float(np.mean(bd_h2d))
+            m_gapply = float(np.mean(bd_gpu_apply))
+            m_capply = float(np.mean(bd_cpu_apply))
+            m_endb = float(np.mean(bd_end_barrier))
+            m_data = float(np.mean(bd_data_iter))
+            m_noncomp = m_wall - (m_gcomp + m_gd2h + m_gidle)
 
-        print(
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"  >>> STEP WALL TIME DECOMPOSITION (Epoch {epoch:02d} Mean):\n"
-            f"      Total Step Wall Time:    {m_wall:5.1f} ms (100.0%)\n"
-            f"      ────────────────────────────────────────────────────────────────────────────\n"
-            f"      [1. Compute Phase]:\n"
-            f"        • GPU Compute (Fwd+Bwd+Concat): {m_gcomp:5.1f} ms ({m_gcomp/m_wall*100:4.1f}%)\n"
-            f"        • GPU D2H Transfer (10.9MB):    {m_gd2h:5.1f} ms ({m_gd2h/m_wall*100:4.1f}%)\n"
-            f"        • GPU Idle (Waiting CPU):       {m_gidle:5.1f} ms ({m_gidle/m_wall*100:4.1f}%)\n"
-            f"        • CPU Compute Step (Ref):       {m_cstep:5.1f} ms ({m_cstep/m_wall*100:4.1f}%)\n"
-            f"      [2. Non-Compute Phase (~45 ms)]:  {m_noncomp:5.1f} ms ({m_noncomp/m_wall*100:4.1f}%)\n"
-            f"        • RAM Gradient Merge:           {m_merge:5.1f} ms ({m_merge/m_wall*100:4.1f}%)\n"
-            f"        • H2D Tensor Conversion:        {m_h2d:5.1f} ms ({m_h2d/m_wall*100:4.1f}%)\n"
-            f"        • GPU Apply (Split/AdamW/Sync): {m_gapply:5.1f} ms ({m_gapply/m_wall*100:4.1f}%)\n"
-            f"        • CPU Apply (18-Core AdamW):    {m_capply:5.1f} ms ({m_capply/m_wall*100:4.1f}%)\n"
-            f"        • End Barrier Wait:             {m_endb:5.1f} ms ({m_endb/m_wall*100:4.1f}%)\n"
-            f"      [3. Pipeline Overhead]:\n"
-            f"        • Inter-Step Data Iterator:     {m_data:5.1f} ms\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            flush=True,
-        )
+            print(
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"  >>> STEP WALL TIME DECOMPOSITION (Epoch {epoch:02d} Mean):\n"
+                f"      Total Step Wall Time:    {m_wall:5.1f} ms (100.0%)\n"
+                f"      ────────────────────────────────────────────────────────────────────────────\n"
+                f"      [1. Compute Phase]:\n"
+                f"        • GPU Compute (Fwd+Bwd+Concat): {m_gcomp:5.1f} ms ({m_gcomp/m_wall*100:4.1f}%)\n"
+                f"        • GPU D2H Transfer (10.9MB):    {m_gd2h:5.1f} ms ({m_gd2h/m_wall*100:4.1f}%)\n"
+                f"        • GPU Idle (Waiting CPU):       {m_gidle:5.1f} ms ({m_gidle/m_wall*100:4.1f}%)\n"
+                f"        • CPU Compute Step (Ref):       {m_cstep:5.1f} ms ({m_cstep/m_wall*100:4.1f}%)\n"
+                f"      [2. Non-Compute Phase (~45 ms)]:  {m_noncomp:5.1f} ms ({m_noncomp/m_wall*100:4.1f}%)\n"
+                f"        • RAM Gradient Merge:           {m_merge:5.1f} ms ({m_merge/m_wall*100:4.1f}%)\n"
+                f"        • H2D Tensor Conversion:        {m_h2d:5.1f} ms ({m_h2d/m_wall*100:4.1f}%)\n"
+                f"        • GPU Apply (Split/AdamW/Sync): {m_gapply:5.1f} ms ({m_gapply/m_wall*100:4.1f}%)\n"
+                f"        • CPU Apply (18-Core AdamW):    {m_capply:5.1f} ms ({m_capply/m_wall*100:4.1f}%)\n"
+                f"        • End Barrier Wait:             {m_endb:5.1f} ms ({m_endb/m_wall*100:4.1f}%)\n"
+                f"      [3. Pipeline Overhead]:\n"
+                f"        • Inter-Step Data Iterator:     {m_data:5.1f} ms\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                flush=True,
+            )
 
         # Validation phase on GPU
         val_loss_accum = 0.0
@@ -614,6 +631,8 @@ def _cpu_worker_proc(
     epochs = int(training_cfg.get("epochs", 20))
     gpu_batch_size = int(joint_cfg.get("gpu_worker", {}).get("batch_size", 256))
     cpu_batch_size = int(cpu_cfg.get("batch_size", 32))
+    total_batch = gpu_batch_size + cpu_batch_size
+    w_cpu = float(cpu_batch_size) / float(total_batch)
     seed = int(config.get("seed", 42))
 
     with tf.device("/CPU:0"):
@@ -655,7 +674,7 @@ def _cpu_worker_proc(
         pred_labels = tf.argmax(predictions, axis=-1, output_type=labels.dtype)
         acc = tf.reduce_mean(tf.cast(tf.equal(pred_labels, labels), tf.float32))
         flat_cpu_grad = tf.concat([tf.reshape(g, [-1]) for g in grads], axis=0)
-        return loss, acc, flat_cpu_grad
+        return loss, acc, flat_cpu_grad * tf.cast(w_cpu, tf.float32)
 
     @tf.function
     def cpu_apply_grads(flat_global_grads):

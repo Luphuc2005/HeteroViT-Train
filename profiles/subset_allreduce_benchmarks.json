@@ -1,0 +1,133 @@
+{
+  "5nodes_lab01_lab02_lab03_lab04_lab05": {
+    "label": "5-node Full Cluster",
+    "ranks": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "nodes": [
+      "lab01",
+      "lab02",
+      "lab03",
+      "lab04",
+      "lab05"
+    ],
+    "size": 5,
+    "payload_mb": 10.275184631347656,
+    "mean_time_ms": 1603.092452493729,
+    "std_time_ms": 28.22072528929811
+  },
+  "4nodes_lab01_lab03_lab04_lab05": {
+    "label": "4-node (drop lab02 / rank 1)",
+    "ranks": [
+      0,
+      2,
+      3,
+      4
+    ],
+    "nodes": [
+      "lab01",
+      "lab03",
+      "lab04",
+      "lab05"
+    ],
+    "size": 4,
+    "payload_mb": 10.275184631347656,
+    "mean_time_ms": 1529.1326971084345,
+    "std_time_ms": 25.957306693425675
+  },
+  "4nodes_lab01_lab02_lab04_lab05": {
+    "label": "4-node (drop lab03 / rank 2)",
+    "ranks": [
+      0,
+      1,
+      3,
+      4
+    ],
+    "nodes": [
+      "lab01",
+      "lab02",
+      "lab04",
+      "lab05"
+    ],
+    "size": 4,
+    "payload_mb": 10.275184631347656,
+    "mean_time_ms": 1509.732703899499,
+    "std_time_ms": 37.342997151274474
+  },
+  "4nodes_lab01_lab02_lab03_lab05": {
+    "label": "4-node (drop lab04 / rank 3)",
+    "ranks": [
+      0,
+      1,
+      2,
+      4
+    ],
+    "nodes": [
+      "lab01",
+      "lab02",
+      "lab03",
+      "lab05"
+    ],
+    "size": 4,
+    "payload_mb": 10.275184631347656,
+    "mean_time_ms": 1502.767451305408,
+    "std_time_ms": 25.1732351379081
+  },
+  "4nodes_lab01_lab02_lab03_lab04": {
+    "label": "4-node (drop lab05 / rank 4)",
+    "ranks": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "nodes": [
+      "lab01",
+      "lab02",
+      "lab03",
+      "lab04"
+    ],
+    "size": 4,
+    "payload_mb": 10.275184631347656,
+    "mean_time_ms": 1504.8821779084392,
+    "std_time_ms": 30.847583874149525
+  },
+  "3nodes_lab01_lab02_lab05": {
+    "label": "3-node (lab01, lab02, lab05)",
+    "ranks": [
+      0,
+      1,
+      4
+    ],
+    "nodes": [
+      "lab01",
+      "lab02",
+      "lab05"
+    ],
+    "size": 3,
+    "payload_mb": 10.275184631347656,
+    "mean_time_ms": 1330.8886864047963,
+    "std_time_ms": 20.889699909269364
+  },
+  "3nodes_lab01_lab04_lab05": {
+    "label": "3-node (lab01, lab04, lab05)",
+    "ranks": [
+      0,
+      3,
+      4
+    ],
+    "nodes": [
+      "lab01",
+      "lab04",
+      "lab05"
+    ],
+    "size": 3,
+    "payload_mb": 10.275184631347656,
+    "mean_time_ms": 1342.1402686974034,
+    "std_time_ms": 36.53282902640411
+  }
+}

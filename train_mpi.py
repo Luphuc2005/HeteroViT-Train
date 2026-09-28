@@ -108,6 +108,30 @@ def parse_args():
         choices=["preserve_local", "average"],
         help="Optimizer state policy: 'preserve_local' (default) or 'average'",
     )
+    parser.add_argument(
+        "--dynamic-rebalance",
+        action="store_true",
+        default=False,
+        help="Enable Phase 2 Closed-Loop Dynamic Load Balancing at epoch boundaries",
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=None,
+        help="Hysteresis gain threshold epsilon (e.g. 0.05 for 5%% gain)",
+    )
+    parser.add_argument(
+        "--cooldown-epochs",
+        type=int,
+        default=None,
+        help="Cooldown number of epochs after rebalancing",
+    )
+    parser.add_argument(
+        "--ema-alpha",
+        type=float,
+        default=None,
+        help="Exponential moving average alpha for telemetry smoothing",
+    )
     return parser.parse_args()
 
 
@@ -129,6 +153,18 @@ if args.local_steps is not None:
     config["training"]["local_steps"] = "full_epoch" if ls_val.lower() == "full_epoch" else int(ls_val)
 if args.opt_sync is not None:
     config["training"]["optimizer_state_sync"] = args.opt_sync
+
+if "dynamic_scheduler" not in config:
+    config["dynamic_scheduler"] = {}
+
+if args.dynamic_rebalance:
+    config["dynamic_scheduler"]["enabled"] = True
+if args.epsilon is not None:
+    config["dynamic_scheduler"]["epsilon"] = float(args.epsilon)
+if args.cooldown_epochs is not None:
+    config["dynamic_scheduler"]["cooldown_epochs"] = int(args.cooldown_epochs)
+if args.ema_alpha is not None:
+    config["dynamic_scheduler"]["ema_alpha"] = float(args.ema_alpha)
 
 seed = int(config.get("seed", 42))
 set_seed(seed)

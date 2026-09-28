@@ -1,0 +1,1187 @@
+{
+  "metadata": {
+    "source_compute_profile": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/profiles/compute_profile.json",
+    "source_network_profile": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/profiles/network_profile.json",
+    "num_nodes": 5,
+    "num_edges": 10,
+    "network_type": "100Mbps Ethernet Switch"
+  },
+  "nodes": [
+    {
+      "node_id": "lab01",
+      "rank": 0,
+      "hostname": "iciplab01",
+      "device_type": "2xGPU",
+      "available_batches": [
+        32,
+        64,
+        128,
+        192,
+        232,
+        240,
+        256,
+        384
+      ],
+      "max_batch": 384,
+      "empirical_compute": {
+        "32": {
+          "batch_size": 32,
+          "accum_steps": 1,
+          "mean_compute_ms": 72.64679668121971,
+          "std_compute_ms": 2.1451322355954194,
+          "min_compute_ms": 69.41164800082333,
+          "max_compute_ms": 82.59763501700945,
+          "throughput_img_s": 440.4874194304631,
+          "sample_count": 50
+        },
+        "64": {
+          "batch_size": 64,
+          "accum_steps": 1,
+          "mean_compute_ms": 118.3215565799037,
+          "std_compute_ms": 2.5743558663488377,
+          "min_compute_ms": 112.75725299492478,
+          "max_compute_ms": 125.62172501930036,
+          "throughput_img_s": 540.8989016872862,
+          "sample_count": 50
+        },
+        "128": {
+          "batch_size": 128,
+          "accum_steps": 1,
+          "mean_compute_ms": 205.77229554066435,
+          "std_compute_ms": 2.862153681214087,
+          "min_compute_ms": 200.7418430002872,
+          "max_compute_ms": 213.5043230082374,
+          "throughput_img_s": 622.0468098666124,
+          "sample_count": 50
+        },
+        "192": {
+          "batch_size": 192,
+          "accum_steps": 1,
+          "mean_compute_ms": 297.78424185642507,
+          "std_compute_ms": 3.2491008669986154,
+          "min_compute_ms": 289.5660770009272,
+          "max_compute_ms": 307.99626899533905,
+          "throughput_img_s": 644.7621230829659,
+          "sample_count": 50
+        },
+        "232": {
+          "batch_size": 232,
+          "accum_steps": 1,
+          "mean_compute_ms": 351.2454246816924,
+          "std_compute_ms": 4.117309847301376,
+          "min_compute_ms": 344.65067699784413,
+          "max_compute_ms": 359.9250260158442,
+          "throughput_img_s": 660.5068242817521,
+          "sample_count": 50
+        },
+        "240": {
+          "batch_size": 240,
+          "accum_steps": 1,
+          "mean_compute_ms": 363.265948399785,
+          "std_compute_ms": 4.307244394275866,
+          "min_compute_ms": 354.26862598978914,
+          "max_compute_ms": 370.31269998988137,
+          "throughput_img_s": 660.6729891893772,
+          "sample_count": 50
+        },
+        "256": {
+          "batch_size": 256,
+          "accum_steps": 2,
+          "mean_compute_ms": 399.2081656807568,
+          "std_compute_ms": 3.6099844812486546,
+          "min_compute_ms": 390.7185480056796,
+          "max_compute_ms": 409.44934700382873,
+          "throughput_img_s": 641.2694478918072,
+          "sample_count": 50
+        },
+        "384": {
+          "batch_size": 384,
+          "accum_steps": 3,
+          "mean_compute_ms": 658.9622502814746,
+          "std_compute_ms": 57.00630056052108,
+          "min_compute_ms": 587.963469006354,
+          "max_compute_ms": 736.841743986588,
+          "throughput_img_s": 582.7344431884756,
+          "sample_count": 50
+        }
+      },
+      "active": true,
+      "runtime_std_ms": 57.00630056052108,
+      "runtime_ema_ms": null
+    },
+    {
+      "node_id": "lab02",
+      "rank": 1,
+      "hostname": "iciplab02",
+      "device_type": "CPU",
+      "available_batches": [
+        8,
+        16,
+        24,
+        32,
+        48,
+        64
+      ],
+      "max_batch": 64,
+      "empirical_compute": {
+        "8": {
+          "batch_size": 8,
+          "accum_steps": 1,
+          "mean_compute_ms": 308.67640045878943,
+          "std_compute_ms": 2.9878197611499733,
+          "min_compute_ms": 303.23972398764454,
+          "max_compute_ms": 315.4527810111176,
+          "throughput_img_s": 25.91710927077517,
+          "sample_count": 50
+        },
+        "16": {
+          "batch_size": 16,
+          "accum_steps": 1,
+          "mean_compute_ms": 601.3816804403905,
+          "std_compute_ms": 4.061603661731687,
+          "min_compute_ms": 593.206445017131,
+          "max_compute_ms": 610.0508689996786,
+          "throughput_img_s": 26.605399732634414,
+          "sample_count": 50
+        },
+        "24": {
+          "batch_size": 24,
+          "accum_steps": 1,
+          "mean_compute_ms": 907.7585832367186,
+          "std_compute_ms": 5.660945579774566,
+          "min_compute_ms": 896.4160590257961,
+          "max_compute_ms": 919.715391995851,
+          "throughput_img_s": 26.438747529574677,
+          "sample_count": 50
+        },
+        "32": {
+          "batch_size": 32,
+          "accum_steps": 1,
+          "mean_compute_ms": 1202.1183562016813,
+          "std_compute_ms": 6.338044966127274,
+          "min_compute_ms": 1185.9616930014454,
+          "max_compute_ms": 1217.5599890179,
+          "throughput_img_s": 26.619675038579405,
+          "sample_count": 50
+        },
+        "48": {
+          "batch_size": 48,
+          "accum_steps": 1,
+          "mean_compute_ms": 1794.7977005981375,
+          "std_compute_ms": 6.652683592616006,
+          "min_compute_ms": 1776.9536699925084,
+          "max_compute_ms": 1811.4042730012443,
+          "throughput_img_s": 26.743961162867233,
+          "sample_count": 50
+        },
+        "64": {
+          "batch_size": 64,
+          "accum_steps": 1,
+          "mean_compute_ms": 2385.9293121582596,
+          "std_compute_ms": 9.079529645647229,
+          "min_compute_ms": 2369.0213800000492,
+          "max_compute_ms": 2406.5370470052585,
+          "throughput_img_s": 26.823929641950286,
+          "sample_count": 50
+        }
+      },
+      "active": true,
+      "runtime_std_ms": 9.079529645647229,
+      "runtime_ema_ms": null
+    },
+    {
+      "node_id": "lab03",
+      "rank": 2,
+      "hostname": "iciplab03",
+      "device_type": "CPU",
+      "available_batches": [
+        8,
+        16,
+        24,
+        32,
+        48,
+        64
+      ],
+      "max_batch": 64,
+      "empirical_compute": {
+        "8": {
+          "batch_size": 8,
+          "accum_steps": 1,
+          "mean_compute_ms": 364.0296518203104,
+          "std_compute_ms": 3.041287998113219,
+          "min_compute_ms": 358.7149239901919,
+          "max_compute_ms": 371.1388550000265,
+          "throughput_img_s": 21.976231771220935,
+          "sample_count": 50
+        },
+        "16": {
+          "batch_size": 16,
+          "accum_steps": 1,
+          "mean_compute_ms": 706.3647496205522,
+          "std_compute_ms": 4.703056822585875,
+          "min_compute_ms": 694.7311020048801,
+          "max_compute_ms": 716.2547150219325,
+          "throughput_img_s": 22.651186952059746,
+          "sample_count": 50
+        },
+        "24": {
+          "batch_size": 24,
+          "accum_steps": 1,
+          "mean_compute_ms": 1053.857590975822,
+          "std_compute_ms": 5.645405505815703,
+          "min_compute_ms": 1042.4787520023528,
+          "max_compute_ms": 1064.3524479819462,
+          "throughput_img_s": 22.773475472883526,
+          "sample_count": 50
+        },
+        "32": {
+          "batch_size": 32,
+          "accum_steps": 1,
+          "mean_compute_ms": 1411.114809337305,
+          "std_compute_ms": 7.044640921609638,
+          "min_compute_ms": 1398.0121149797924,
+          "max_compute_ms": 1422.3227589973249,
+          "throughput_img_s": 22.677105922393377,
+          "sample_count": 50
+        },
+        "48": {
+          "batch_size": 48,
+          "accum_steps": 1,
+          "mean_compute_ms": 2126.3843858626205,
+          "std_compute_ms": 9.85853843605308,
+          "min_compute_ms": 2101.7975080176257,
+          "max_compute_ms": 2142.1087680209894,
+          "throughput_img_s": 22.573529188386892,
+          "sample_count": 50
+        },
+        "64": {
+          "batch_size": 64,
+          "accum_steps": 1,
+          "mean_compute_ms": 2849.5384213572834,
+          "std_compute_ms": 100.02982382317978,
+          "min_compute_ms": 2806.7920230096206,
+          "max_compute_ms": 3482.2704039979726,
+          "throughput_img_s": 22.459777878522416,
+          "sample_count": 50
+        }
+      },
+      "active": true,
+      "runtime_std_ms": 100.02982382317978,
+      "runtime_ema_ms": null
+    },
+    {
+      "node_id": "lab04",
+      "rank": 3,
+      "hostname": "iciplab04",
+      "device_type": "CPU",
+      "available_batches": [
+        8,
+        16,
+        24,
+        32,
+        48,
+        64
+      ],
+      "max_batch": 64,
+      "empirical_compute": {
+        "8": {
+          "batch_size": 8,
+          "accum_steps": 1,
+          "mean_compute_ms": 364.1253978171153,
+          "std_compute_ms": 3.3820308837170048,
+          "min_compute_ms": 359.21451001195237,
+          "max_compute_ms": 373.97276898263954,
+          "throughput_img_s": 21.97045316794425,
+          "sample_count": 50
+        },
+        "16": {
+          "batch_size": 16,
+          "accum_steps": 1,
+          "mean_compute_ms": 710.7300220424077,
+          "std_compute_ms": 4.403420597330885,
+          "min_compute_ms": 701.4317369903438,
+          "max_compute_ms": 719.0545379999094,
+          "throughput_img_s": 22.512064361684324,
+          "sample_count": 50
+        },
+        "24": {
+          "batch_size": 24,
+          "accum_steps": 1,
+          "mean_compute_ms": 1058.3768795221113,
+          "std_compute_ms": 5.801020902779403,
+          "min_compute_ms": 1045.9715689939912,
+          "max_compute_ms": 1083.1864569918253,
+          "throughput_img_s": 22.676232317959094,
+          "sample_count": 50
+        },
+        "32": {
+          "batch_size": 32,
+          "accum_steps": 1,
+          "mean_compute_ms": 1406.215208483045,
+          "std_compute_ms": 7.227401014932759,
+          "min_compute_ms": 1390.7164389966056,
+          "max_compute_ms": 1418.0371290131006,
+          "throughput_img_s": 22.75611855636237,
+          "sample_count": 50
+        },
+        "48": {
+          "batch_size": 48,
+          "accum_steps": 1,
+          "mean_compute_ms": 2119.778022179962,
+          "std_compute_ms": 13.455473830610229,
+          "min_compute_ms": 2094.268196990015,
+          "max_compute_ms": 2144.633452000562,
+          "throughput_img_s": 22.64388039585258,
+          "sample_count": 50
+        },
+        "64": {
+          "batch_size": 64,
+          "accum_steps": 1,
+          "mean_compute_ms": 2847.0962492382387,
+          "std_compute_ms": 8.990050928035885,
+          "min_compute_ms": 2829.342976998305,
+          "max_compute_ms": 2866.826539975591,
+          "throughput_img_s": 22.479043347102742,
+          "sample_count": 50
+        }
+      },
+      "active": true,
+      "runtime_std_ms": 8.990050928035885,
+      "runtime_ema_ms": null
+    },
+    {
+      "node_id": "lab05",
+      "rank": 4,
+      "hostname": "iciplab05",
+      "device_type": "CPU",
+      "available_batches": [
+        16,
+        32,
+        48,
+        64,
+        96,
+        128
+      ],
+      "max_batch": 128,
+      "empirical_compute": {
+        "16": {
+          "batch_size": 16,
+          "accum_steps": 1,
+          "mean_compute_ms": 215.0338018790353,
+          "std_compute_ms": 2.785488537145434,
+          "min_compute_ms": 210.1886600139551,
+          "max_compute_ms": 221.52046900009736,
+          "throughput_img_s": 74.40690654300299,
+          "sample_count": 50
+        },
+        "32": {
+          "batch_size": 32,
+          "accum_steps": 1,
+          "mean_compute_ms": 460.1243465038715,
+          "std_compute_ms": 4.265337855827801,
+          "min_compute_ms": 449.9154200020712,
+          "max_compute_ms": 470.99412899115123,
+          "throughput_img_s": 69.54641770891546,
+          "sample_count": 50
+        },
+        "48": {
+          "batch_size": 48,
+          "accum_steps": 1,
+          "mean_compute_ms": 712.6606544823153,
+          "std_compute_ms": 5.05239780510267,
+          "min_compute_ms": 699.6084910060745,
+          "max_compute_ms": 724.2979459988419,
+          "throughput_img_s": 67.35323424704531,
+          "sample_count": 50
+        },
+        "64": {
+          "batch_size": 64,
+          "accum_steps": 1,
+          "mean_compute_ms": 972.4250305187888,
+          "std_compute_ms": 6.000602139887922,
+          "min_compute_ms": 958.9639460027684,
+          "max_compute_ms": 985.1795099966694,
+          "throughput_img_s": 65.81484226692108,
+          "sample_count": 50
+        },
+        "96": {
+          "batch_size": 96,
+          "accum_steps": 1,
+          "mean_compute_ms": 1482.9199383995729,
+          "std_compute_ms": 8.339978394851887,
+          "min_compute_ms": 1463.5913300153334,
+          "max_compute_ms": 1499.3544119934086,
+          "throughput_img_s": 64.73714292600792,
+          "sample_count": 50
+        },
+        "128": {
+          "batch_size": 128,
+          "accum_steps": 1,
+          "mean_compute_ms": 1995.6950795580633,
+          "std_compute_ms": 11.212870745357039,
+          "min_compute_ms": 1974.598052998772,
+          "max_compute_ms": 2019.4163740088698,
+          "throughput_img_s": 64.13805461120091,
+          "sample_count": 50
+        }
+      },
+      "active": true,
+      "runtime_std_ms": 11.212870745357039,
+      "runtime_ema_ms": null
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "lab01_lab02",
+      "node_u": "lab01",
+      "node_v": "lab02",
+      "rank_u": 0,
+      "rank_v": 1,
+      "latency_ms": 0.1382520465995185,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 0.4414774157145285,
+        "64KB": 10.281956756446604,
+        "1MB": 11.063554881718701,
+        "5MB": 11.196685838256471,
+        "10MB": 11.201276621268887,
+        "20MB": 11.136823726187243,
+        "50MB": 11.159341791927861
+      },
+      "bandwidth_10mb_mb_s": 11.201276621268887,
+      "bandwidth_gradient_mb_s": 11.199471940206601,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.276504093199037,
+          "latency_ms": 0.1382520465995185,
+          "bw_mb_s": 0.4414774157145285,
+          "std_rtt_ms": 0.06680282775882046
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 12.157218996435404,
+          "latency_ms": 6.078609498217702,
+          "bw_mb_s": 10.281956756446604,
+          "std_rtt_ms": 0.12081994722933397
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 180.77372249535983,
+          "latency_ms": 90.38686124767992,
+          "bw_mb_s": 11.063554881718701,
+          "std_rtt_ms": 2.1451767512945623
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 893.1214240049788,
+          "latency_ms": 446.5607120024894,
+          "bw_mb_s": 11.196685838256471,
+          "std_rtt_ms": 0.2407346206822066
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1785.510765980386,
+          "latency_ms": 892.755382990193,
+          "bw_mb_s": 11.201276621268887,
+          "std_rtt_ms": 1.3123420283739475
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3591.6883470054017,
+          "latency_ms": 1795.8441735027009,
+          "bw_mb_s": 11.136823726187243,
+          "std_rtt_ms": 23.070409006322734
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8961.101995490026,
+          "latency_ms": 4480.550997745013,
+          "bw_mb_s": 11.159341791927861,
+          "std_rtt_ms": 40.125646512024105
+        }
+      }
+    },
+    {
+      "edge_id": "lab01_lab03",
+      "node_u": "lab01",
+      "node_v": "lab03",
+      "rank_u": 0,
+      "rank_v": 2,
+      "latency_ms": 0.13137510104570538,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 0.46458694047942833,
+        "64KB": 10.154351835324855,
+        "1MB": 11.124376327143132,
+        "5MB": 11.010151168960329,
+        "10MB": 11.1093577994104,
+        "20MB": 11.20498462816997,
+        "50MB": 11.208125075067215
+      },
+      "bandwidth_10mb_mb_s": 11.1093577994104,
+      "bandwidth_gradient_mb_s": 11.112035350615669,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.26275020209141076,
+          "latency_ms": 0.13137510104570538,
+          "bw_mb_s": 0.46458694047942833,
+          "std_rtt_ms": 0.05634752086827036
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 12.309992998780217,
+          "latency_ms": 6.1549964993901085,
+          "bw_mb_s": 10.154351835324855,
+          "std_rtt_ms": 0.03223123517274281
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 179.7853597527137,
+          "latency_ms": 89.89267987635685,
+          "bw_mb_s": 11.124376327143132,
+          "std_rtt_ms": 0.3199058039846963
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 908.2527429951975,
+          "latency_ms": 454.12637149759877,
+          "bw_mb_s": 11.010151168960329,
+          "std_rtt_ms": 21.058934992770173
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1800.2840813229948,
+          "latency_ms": 900.1420406614974,
+          "bw_mb_s": 11.1093577994104,
+          "std_rtt_ms": 21.15123729268622
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3569.8397925007157,
+          "latency_ms": 1784.9198962503579,
+          "bw_mb_s": 11.20498462816997,
+          "std_rtt_ms": 1.996716484427452
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8922.098864015425,
+          "latency_ms": 4461.049432007712,
+          "bw_mb_s": 11.208125075067215,
+          "std_rtt_ms": 0.6593069992959499
+        }
+      }
+    },
+    {
+      "edge_id": "lab01_lab04",
+      "node_u": "lab01",
+      "node_v": "lab04",
+      "rank_u": 0,
+      "rank_v": 3,
+      "latency_ms": 0.12208500120323151,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 0.4999398423103299,
+        "64KB": 10.259963680228383,
+        "1MB": 11.13730952852967,
+        "5MB": 11.206300582554732,
+        "10MB": 11.199798860867821,
+        "20MB": 11.20784642746855,
+        "50MB": 11.208365018388639
+      },
+      "bandwidth_10mb_mb_s": 11.199798860867821,
+      "bandwidth_gradient_mb_s": 11.200024192732641,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.24417000240646303,
+          "latency_ms": 0.12208500120323151,
+          "bw_mb_s": 0.4999398423103299,
+          "std_rtt_ms": 0.011087656716487397
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 12.183278995507862,
+          "latency_ms": 6.091639497753931,
+          "bw_mb_s": 10.259963680228383,
+          "std_rtt_ms": 0.11436675882902454
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 179.57658399245702,
+          "latency_ms": 89.78829199622851,
+          "bw_mb_s": 11.13730952852967,
+          "std_rtt_ms": 0.16256770727755165
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 892.3551466723438,
+          "latency_ms": 446.1775733361719,
+          "bw_mb_s": 11.206300582554732,
+          "std_rtt_ms": 0.3334805059953167
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1785.746355667167,
+          "latency_ms": 892.8731778335836,
+          "bw_mb_s": 11.199798860867821,
+          "std_rtt_ms": 0.5449309335151837
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3568.9282734965673,
+          "latency_ms": 1784.4641367482836,
+          "bw_mb_s": 11.20784642746855,
+          "std_rtt_ms": 1.094172490411438
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8921.907863987144,
+          "latency_ms": 4460.953931993572,
+          "bw_mb_s": 11.208365018388639,
+          "std_rtt_ms": 2.8082799981348217
+        }
+      }
+    },
+    {
+      "edge_id": "lab01_lab05",
+      "node_u": "lab01",
+      "node_v": "lab05",
+      "rank_u": 0,
+      "rank_v": 4,
+      "latency_ms": 0.12254150060471149,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 0.4980774345736494,
+        "64KB": 10.236770354872895,
+        "1MB": 11.134850473320592,
+        "5MB": 11.193463954340002,
+        "10MB": 11.20388192584763,
+        "20MB": 11.206439538884139,
+        "50MB": 11.208998124134084
+      },
+      "bandwidth_10mb_mb_s": 11.20388192584763,
+      "bandwidth_gradient_mb_s": 11.203953539012653,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.24508300120942297,
+          "latency_ms": 0.12254150060471149,
+          "bw_mb_s": 0.4980774345736494,
+          "std_rtt_ms": 0.005489218072855481
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 12.210882501676679,
+          "latency_ms": 6.105441250838339,
+          "bw_mb_s": 10.236770354872895,
+          "std_rtt_ms": 0.1054249403334217
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 179.61624224699335,
+          "latency_ms": 89.80812112349668,
+          "bw_mb_s": 11.134850473320592,
+          "std_rtt_ms": 0.28310038045480374
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 893.3784966648091,
+          "latency_ms": 446.68924833240453,
+          "bw_mb_s": 11.193463954340002,
+          "std_rtt_ms": 0.37521821046651815
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1785.0955706574798,
+          "latency_ms": 892.5477853287399,
+          "bw_mb_s": 11.20388192584763,
+          "std_rtt_ms": 0.7573022997242981
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3569.3763269955525,
+          "latency_ms": 1784.6881634977763,
+          "bw_mb_s": 11.206439538884139,
+          "std_rtt_ms": 0.19573500321712345
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8921.403937492869,
+          "latency_ms": 4460.701968746434,
+          "bw_mb_s": 11.208998124134084,
+          "std_rtt_ms": 1.109683493268676
+        }
+      }
+    },
+    {
+      "edge_id": "lab02_lab03",
+      "node_u": "lab02",
+      "node_v": "lab03",
+      "rank_u": 1,
+      "rank_v": 2,
+      "latency_ms": 0.07805180066497996,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 0.7819826798356627,
+        "64KB": 10.579326680067693,
+        "1MB": 11.165604860401993,
+        "5MB": 11.196153665127682,
+        "10MB": 11.20143489778423,
+        "20MB": 11.204351949358735,
+        "50MB": 11.205208759036061
+      },
+      "bandwidth_10mb_mb_s": 11.20143489778423,
+      "bandwidth_gradient_mb_s": 11.201516575228316,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.15610360132995993,
+          "latency_ms": 0.07805180066497996,
+          "bw_mb_s": 0.7819826798356627,
+          "std_rtt_ms": 0.017998542489991252
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 11.815496749477461,
+          "latency_ms": 5.9077483747387305,
+          "bw_mb_s": 10.579326680067693,
+          "std_rtt_ms": 0.04377310520295449
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 179.12150976189878,
+          "latency_ms": 89.56075488094939,
+          "bw_mb_s": 11.165604860401993,
+          "std_rtt_ms": 0.2982568549745936
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 893.1638756572889,
+          "latency_ms": 446.58193782864447,
+          "bw_mb_s": 11.196153665127682,
+          "std_rtt_ms": 0.7542726260860209
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1785.485536674969,
+          "latency_ms": 892.7427683374844,
+          "bw_mb_s": 11.20143489778423,
+          "std_rtt_ms": 0.3031149156554047
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3570.041371494881,
+          "latency_ms": 1785.0206857474404,
+          "bw_mb_s": 11.204351949358735,
+          "std_rtt_ms": 0.5161125009180978
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8924.420968003687,
+          "latency_ms": 4462.210484001844,
+          "bw_mb_s": 11.205208759036061,
+          "std_rtt_ms": 0.5698310123989359
+        }
+      }
+    },
+    {
+      "edge_id": "lab02_lab04",
+      "node_u": "lab02",
+      "node_v": "lab04",
+      "rank_u": 1,
+      "rank_v": 3,
+      "latency_ms": 0.07153015321819112,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 0.8532787014145232,
+        "64KB": 10.604769206826315,
+        "1MB": 11.159209706870255,
+        "5MB": 11.203248774257535,
+        "10MB": 11.205432044718618,
+        "20MB": 11.210407922036756,
+        "50MB": 11.212347281974925
+      },
+      "bandwidth_10mb_mb_s": 11.205432044718618,
+      "bandwidth_gradient_mb_s": 11.205571369283525,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.14306030643638223,
+          "latency_ms": 0.07153015321819112,
+          "bw_mb_s": 0.8532787014145232,
+          "std_rtt_ms": 0.02408499356335048
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 11.787149494921323,
+          "latency_ms": 5.8935747474606615,
+          "bw_mb_s": 10.604769206826315,
+          "std_rtt_ms": 0.026153229723975283
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 179.22416125657037,
+          "latency_ms": 89.61208062828518,
+          "bw_mb_s": 11.159209706870255,
+          "std_rtt_ms": 0.12947473228772052
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 892.598227665682,
+          "latency_ms": 446.299113832841,
+          "bw_mb_s": 11.203248774257535,
+          "std_rtt_ms": 0.23322289290394274
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1784.8486270037636,
+          "latency_ms": 892.4243135018818,
+          "bw_mb_s": 11.205432044718618,
+          "std_rtt_ms": 0.5849115614469731
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3568.1128000142053,
+          "latency_ms": 1784.0564000071026,
+          "bw_mb_s": 11.210407922036756,
+          "std_rtt_ms": 1.54889898840338
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8918.739090499002,
+          "latency_ms": 4459.369545249501,
+          "bw_mb_s": 11.212347281974925,
+          "std_rtt_ms": 2.736426511546597
+        }
+      }
+    },
+    {
+      "edge_id": "lab02_lab05",
+      "node_u": "lab02",
+      "node_v": "lab05",
+      "rank_u": 1,
+      "rank_v": 4,
+      "latency_ms": 0.05761510110460222,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 1.0593603947546417,
+        "64KB": 10.569783631799195,
+        "1MB": 11.185160070932538,
+        "5MB": 11.208310342147017,
+        "10MB": 11.206627557375,
+        "20MB": 11.205323472589464,
+        "50MB": 11.203805306307805
+      },
+      "bandwidth_10mb_mb_s": 11.206627557375,
+      "bandwidth_gradient_mb_s": 11.206591043001005,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.11523020220920444,
+          "latency_ms": 0.05761510110460222,
+          "bw_mb_s": 1.0593603947546417,
+          "std_rtt_ms": 0.011381492815371529
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 11.82616450387286,
+          "latency_ms": 5.91308225193643,
+          "bw_mb_s": 10.569783631799195,
+          "std_rtt_ms": 0.2418642617644174
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 178.8083485007519,
+          "latency_ms": 89.40417425037595,
+          "bw_mb_s": 11.185160070932538,
+          "std_rtt_ms": 0.012394172892854287
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 892.1951386728324,
+          "latency_ms": 446.0975693364162,
+          "bw_mb_s": 11.208310342147017,
+          "std_rtt_ms": 0.38784741061120054
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1784.6582210040651,
+          "latency_ms": 892.3291105020326,
+          "bw_mb_s": 11.206627557375,
+          "std_rtt_ms": 0.5153514722079731
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3569.7318419988733,
+          "latency_ms": 1784.8659209994366,
+          "bw_mb_s": 11.205323472589464,
+          "std_rtt_ms": 0.8951899944804609
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8925.53889201372,
+          "latency_ms": 4462.76944600686,
+          "bw_mb_s": 11.203805306307805,
+          "std_rtt_ms": 0.7077170012053102
+        }
+      }
+    },
+    {
+      "edge_id": "lab03_lab04",
+      "node_u": "lab03",
+      "node_v": "lab04",
+      "rank_u": 2,
+      "rank_v": 3,
+      "latency_ms": 0.10135904885828495,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 0.6021678077833608,
+        "64KB": 10.573274035376171,
+        "1MB": 11.157856050487899,
+        "5MB": 11.202211992425614,
+        "10MB": 11.205649080355972,
+        "20MB": 11.20532308802473,
+        "50MB": 11.20663066068916
+      },
+      "bandwidth_10mb_mb_s": 11.205649080355972,
+      "bandwidth_gradient_mb_s": 11.205639952570698,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.2027180977165699,
+          "latency_ms": 0.10135904885828495,
+          "bw_mb_s": 0.6021678077833608,
+          "std_rtt_ms": 0.028587671828060157
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 11.822260501503479,
+          "latency_ms": 5.911130250751739,
+          "bw_mb_s": 10.573274035376171,
+          "std_rtt_ms": 0.031072970682181855
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 179.24590449547395,
+          "latency_ms": 89.62295224773698,
+          "bw_mb_s": 11.157856050487899,
+          "std_rtt_ms": 0.09591037585022631
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 892.6808389951475,
+          "latency_ms": 446.34041949757375,
+          "bw_mb_s": 11.202211992425614,
+          "std_rtt_ms": 0.4227510281424609
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1784.8140573187266,
+          "latency_ms": 892.4070286593633,
+          "bw_mb_s": 11.205649080355972,
+          "std_rtt_ms": 0.5309130127718058
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3569.7319645114476,
+          "latency_ms": 1784.8659822557238,
+          "bw_mb_s": 11.20532308802473,
+          "std_rtt_ms": 0.4615245125023648
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8923.288634003256,
+          "latency_ms": 4461.644317001628,
+          "bw_mb_s": 11.20663066068916,
+          "std_rtt_ms": 0.8213019900722429
+        }
+      }
+    },
+    {
+      "edge_id": "lab03_lab05",
+      "node_u": "lab03",
+      "node_v": "lab05",
+      "rank_u": 2,
+      "rank_v": 4,
+      "latency_ms": 0.09342559933429584,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 0.6533022713785733,
+        "64KB": 10.622554802202245,
+        "1MB": 11.15816632257491,
+        "5MB": 11.198416705295315,
+        "10MB": 11.210919502479555,
+        "20MB": 11.208721862264703,
+        "50MB": 11.210096523746751
+      },
+      "bandwidth_10mb_mb_s": 11.210919502479555,
+      "bandwidth_gradient_mb_s": 11.21085796855354,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.18685119866859168,
+          "latency_ms": 0.09342559933429584,
+          "bw_mb_s": 0.6533022713785733,
+          "std_rtt_ms": 0.025598001196207216
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 11.767413991037756,
+          "latency_ms": 5.883706995518878,
+          "bw_mb_s": 10.622554802202245,
+          "std_rtt_ms": 0.010076958279091676
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 179.24092025350546,
+          "latency_ms": 89.62046012675273,
+          "bw_mb_s": 11.15816632257491,
+          "std_rtt_ms": 0.155052024908746
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 892.9833799872237,
+          "latency_ms": 446.4916899936118,
+          "bw_mb_s": 11.198416705295315,
+          "std_rtt_ms": 0.5745524207921069
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1783.9749893464614,
+          "latency_ms": 891.9874946732307,
+          "bw_mb_s": 11.210919502479555,
+          "std_rtt_ms": 0.32295027888654887
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3568.649529493996,
+          "latency_ms": 1784.324764746998,
+          "bw_mb_s": 11.208721862264703,
+          "std_rtt_ms": 0.2408794971415773
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8920.529790993896,
+          "latency_ms": 4460.264895496948,
+          "bw_mb_s": 11.210096523746751,
+          "std_rtt_ms": 2.1182460041018203
+        }
+      }
+    },
+    {
+      "edge_id": "lab04_lab05",
+      "node_u": "lab04",
+      "node_v": "lab05",
+      "rank_u": 3,
+      "rank_v": 4,
+      "latency_ms": 0.07800084858899936,
+      "bandwidth_by_payload_mb_s": {
+        "64B": 0.7824934901875917,
+        "64KB": 10.572165142929865,
+        "1MB": 11.16839455135541,
+        "5MB": 11.207843878041402,
+        "10MB": 11.20490060073711,
+        "20MB": 11.20784181422535,
+        "50MB": 11.206279306913805
+      },
+      "bandwidth_10mb_mb_s": 11.20490060073711,
+      "bandwidth_gradient_mb_s": 11.204982954714781,
+      "is_bidirectional": true,
+      "raw_measurements": {
+        "64B": {
+          "bytes": 64,
+          "rtt_ms": 0.15600169717799872,
+          "latency_ms": 0.07800084858899936,
+          "bw_mb_s": 0.7824934901875917,
+          "std_rtt_ms": 0.024504718743281348
+        },
+        "64KB": {
+          "bytes": 65536,
+          "rtt_ms": 11.823500513855834,
+          "latency_ms": 5.911750256927917,
+          "bw_mb_s": 10.572165142929865,
+          "std_rtt_ms": 0.0475819781092176
+        },
+        "1MB": {
+          "bytes": 1048576,
+          "rtt_ms": 179.07676799950423,
+          "latency_ms": 89.53838399975211,
+          "bw_mb_s": 11.16839455135541,
+          "std_rtt_ms": 0.2567049384510078
+        },
+        "5MB": {
+          "bytes": 5242880,
+          "rtt_ms": 892.2322713284908,
+          "latency_ms": 446.1161356642454,
+          "bw_mb_s": 11.207843878041402,
+          "std_rtt_ms": 0.5022350094136355
+        },
+        "10MB": {
+          "bytes": 10485760,
+          "rtt_ms": 1784.933281664659,
+          "latency_ms": 892.4666408323295,
+          "bw_mb_s": 11.20490060073711,
+          "std_rtt_ms": 1.0193401495083825
+        },
+        "20MB": {
+          "bytes": 20971520,
+          "rtt_ms": 3568.9297424978577,
+          "latency_ms": 1784.4648712489288,
+          "bw_mb_s": 11.20784181422535,
+          "std_rtt_ms": 0.07601649849675596
+        },
+        "50MB": {
+          "bytes": 52428800,
+          "rtt_ms": 8923.568408499705,
+          "latency_ms": 4461.784204249852,
+          "bw_mb_s": 11.206279306913805,
+          "std_rtt_ms": 1.962370501132682
+        }
+      }
+    }
+  ],
+  "collectives": {
+    "model": "vit_tiny",
+    "model_size_mb": 10.275184631347656,
+    "allreduce_5nodes_ms": 1599.1045565533568,
+    "allreduce_4nodes_no_lab02_ms": 1514.2850168514997,
+    "allreduce_4nodes_no_lab03_ms": 1511.4557335997233,
+    "raw_allreduce": {
+      "5_nodes": {
+        "label": "5-node (lab01..lab05)",
+        "world_size": 5,
+        "payload_bytes": 10774312,
+        "payload_mb": 10.275184631347656,
+        "mean_time_ms": 1599.1045565533568,
+        "std_time_ms": 11.502083097583078,
+        "min_time_ms": 1585.9614409855567,
+        "max_time_ms": 1617.3251500003971,
+        "effective_bw_mb_s": 10.280938380659096
+      },
+      "4_nodes_no_lab02": {
+        "label": "4-node (excluding lab02)",
+        "world_size": 4,
+        "payload_bytes": 10774312,
+        "payload_mb": 10.275184631347656,
+        "mean_time_ms": 1514.2850168514997,
+        "std_time_ms": 5.089909561508602,
+        "min_time_ms": 1507.0273659948725,
+        "max_time_ms": 1522.3788800067268,
+        "effective_bw_mb_s": 10.178253615074208
+      },
+      "4_nodes_no_lab03": {
+        "label": "4-node (excluding lab03)",
+        "world_size": 4,
+        "payload_bytes": 10774312,
+        "payload_mb": 10.275184631347656,
+        "mean_time_ms": 1511.4557335997233,
+        "std_time_ms": 6.397287760847891,
+        "min_time_ms": 1492.8846359835006,
+        "max_time_ms": 1519.2927939933725,
+        "effective_bw_mb_s": 10.197306215719598
+      }
+    }
+  }
+}

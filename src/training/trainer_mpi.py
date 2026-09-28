@@ -83,8 +83,43 @@ class MPITrainer(BaseTrainer):
 
         import socket
         self.hostname = socket.gethostname()
+        self.rank_to_node = {0: "lab01", 1: "lab02", 2: "lab03", 3: "lab04", 4: "lab05"}
+        self.node_id = self.rank_to_node.get(self.rank, f"lab0{self.rank+1}")
         self.num_gpus = len(tf.config.list_physical_devices("GPU")) if self.rank == 0 else 0
         self.device_str = f"{self.num_gpus}xGPU" if (self.rank == 0 and self.num_gpus > 0) else "CPU"
+
+        # Phase 2: Dynamic Load Balancer configuration
+        self.dynamic_cfg = config.get("dynamic_scheduler", {})
+        self.dynamic_rebalance_enabled = bool(self.dynamic_cfg.get("enabled", False))
+        self.dynamic_rebalancer = None
+
+        if self.rank == 0 and self.dynamic_rebalance_enabled:
+            from src.scheduler.models.compute_model import ComputeCostModel
+            from src.scheduler.models.communication_model import CommunicationCostModel
+            from src.scheduler.online_state import OnlineClusterState
+            from src.scheduler.online_cost_model import OnlineCostModel
+            from src.scheduler.dynamic_rebalancer import DynamicRebalancer
+
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+            comp_prof = self.dynamic_cfg.get("compute_profile", os.path.join(project_root, "profiles", "compute_profile.json"))
+            net_prof = self.dynamic_cfg.get("network_profile", os.path.join(project_root, "profiles", "network_profile.json"))
+            cluster_state = OnlineClusterState(ema_alpha=float(self.dynamic_cfg.get("ema_alpha", 0.2)))
+            online_cm = OnlineCostModel(
+                compute_model=ComputeCostModel(comp_prof),
+                communication_model=CommunicationCostModel(net_prof),
+                cluster_state=cluster_state,
+                r_min=float(self.dynamic_cfg.get("r_min", 0.5)),
+                r_max=float(self.dynamic_cfg.get("r_max", 3.0)),
+                lambda_penalty=float(self.dynamic_cfg.get("lambda_penalty", 1.0)),
+            )
+            rebalance_csv = os.path.join(self.logger.run_dir, "rebalance_log.csv") if hasattr(self.logger, "run_dir") else None
+            self.dynamic_rebalancer = DynamicRebalancer(
+                cost_model=online_cm,
+                epsilon=float(self.dynamic_cfg.get("epsilon", 0.05)),
+                cooldown_epochs=int(self.dynamic_cfg.get("cooldown_epochs", 1)),
+                slowdown_threshold_r=float(self.dynamic_cfg.get("slowdown_threshold_r", 1.15)),
+                log_csv_path=rebalance_csv,
+            )
 
         # Phase 1: Local-Step Synchronization configuration
         self.sync_mode = str(training_cfg.get("sync_mode", "gradient_allreduce")).lower()
@@ -113,15 +148,17 @@ class MPITrainer(BaseTrainer):
                         "idle_pct",
                         "is_straggler",
                     ])
-        # Phase 1: Step-level Runtime Instrumentation
+        # Phase 1 & 2: Step-level Runtime Instrumentation
         self.runtime_profiler = None
         if hasattr(self.logger, "run_dir") and self.logger.run_dir:
             from src.scheduler.profiling.runtime_profiler import RuntimeProfiler
             fname = "step_metrics.csv" if self.rank == 0 else f"step_metrics_rank{self.rank}.csv"
+            ema_a = float(self.dynamic_cfg.get("ema_alpha", 0.2)) if self.dynamic_rebalance_enabled else 0.15
             self.runtime_profiler = RuntimeProfiler(
                 output_dir=self.logger.run_dir,
-                node_id=self.hostname,
+                node_id=self.node_id,
                 rank=self.rank,
+                ema_alpha=ema_a,
                 filename=fname,
             )
 
@@ -344,6 +381,56 @@ class MPITrainer(BaseTrainer):
             self._compute_local_grads = compute_local_grads
             self._apply_global_grads = apply_global_grads
             self._local_train_step = local_train_step
+
+    def rebuild_dataset(self, new_rank_batch_sizes: List[int]):
+        """Re-partitions and rebuilds local training dataset when allocation changes."""
+        self.rank_batch_sizes = [int(b) for b in new_rank_batch_sizes]
+        self.local_batch_size = self.rank_batch_sizes[self.rank]
+        self.global_batch_size = sum(self.rank_batch_sizes)
+
+        # Gradient accumulation configuration
+        grad_accum_cfg = self.config.get("training", {}).get("grad_accum", {})
+        self.accum_steps = 1
+        self.micro_batch_size = self.local_batch_size
+        if self.rank == 0 and grad_accum_cfg.get("enabled", False):
+            mb = int(grad_accum_cfg.get("micro_batch_size", 128))
+            if self.local_batch_size > mb:
+                self.accum_steps = self.local_batch_size // mb
+                self.micro_batch_size = mb
+
+        from src.data.cifar10 import build_cifar10_datasets
+        dataset_cfg = self.config.get("dataset", {})
+        data_dir = dataset_cfg.get("data_dir", "./data/cifar10")
+        model_cfg = self.config.get("model", {})
+        image_size = int(model_cfg.get("image_size", 32))
+        seed = int(self.config.get("seed", 42))
+        drop_remainder = bool(self.config.get("training", {}).get("drop_remainder", True))
+
+        if self.local_batch_size > 0:
+            train_ds, val_ds, test_ds, steps_per_epoch, val_steps = build_cifar10_datasets(
+                data_dir=data_dir,
+                batch_size=self.local_batch_size,
+                val_split=0.1,
+                image_size=image_size,
+                seed=seed,
+                cache=True,
+                rank=self.rank,
+                num_ranks=self.world_size,
+                drop_remainder=drop_remainder,
+                rank_batch_sizes=self.rank_batch_sizes,
+            )
+            self.train_ds = train_ds
+            if self.rank == 0 and self.strategy is not None:
+                self.dist_train_ds = self.strategy.experimental_distribute_dataset(train_ds)
+            else:
+                self.dist_train_ds = train_ds
+            self.steps_per_epoch = steps_per_epoch
+        else:
+            self.train_ds = None
+            self.dist_train_ds = None
+            self.steps_per_epoch = 45000 // max(self.global_batch_size, 1)
+
+        self._setup_step_functions()
 
     def allreduce_gradients(self, local_grads: List[tf.Tensor]) -> List[tf.Tensor]:
         """AllReduce all weighted local gradients in one fused MPI buffer.
@@ -791,14 +878,30 @@ class MPITrainer(BaseTrainer):
             total_compute_time = 0.0
             step_count = 0
 
-            for step, (images, labels) in enumerate(self.dist_train_ds, start=1):
+            train_iter = iter(self.dist_train_ds) if (self.dist_train_ds is not None and self.local_batch_size > 0) else None
+
+            for step in range(1, self.steps_per_epoch + 1):
                 step_start_time = time.perf_counter()
                 total_steps_executed += 1
 
                 # 1. Forward pass & local gradient computation (Mean of local batch)
-                t_comp_start = time.perf_counter()
-                loss, acc, local_grads = self._compute_local_grads(images, labels)
-                t_comp_end = time.perf_counter()
+                if self.local_batch_size > 0 and train_iter is not None:
+                    try:
+                        images, labels = next(train_iter)
+                    except StopIteration:
+                        train_iter = iter(self.dist_train_ds)
+                        images, labels = next(train_iter)
+
+                    t_comp_start = time.perf_counter()
+                    loss, acc, local_grads = self._compute_local_grads(images, labels)
+                    t_comp_end = time.perf_counter()
+                else:
+                    t_comp_start = time.perf_counter()
+                    loss = tf.constant(0.0, dtype=tf.float32)
+                    acc = tf.constant(0.0, dtype=tf.float32)
+                    local_grads = [tf.zeros_like(v) for v in self.model.trainable_variables]
+                    t_comp_end = time.perf_counter()
+
                 compute_time = t_comp_end - t_comp_start
                 total_compute_time += compute_time
 
@@ -1036,6 +1139,79 @@ class MPITrainer(BaseTrainer):
                     best_val_acc=self.best_val_accuracy,
                     cluster_info=batch_summary,
                 )
+
+            # --- Phase 2: Closed-Loop Dynamic Workload Rebalancer ---
+            if self.dynamic_rebalance_enabled and epoch < self.epochs:
+                # 1. Gather rich runtime telemetry from each worker's RuntimeProfiler
+                if hasattr(self, "runtime_profiler") and self.runtime_profiler is not None:
+                    telemetry = self.runtime_profiler.get_latest_telemetry(current_batch=self.local_batch_size)
+                    telemetry["node_id"] = self.node_id
+                    telemetry["rank"] = self.rank
+                else:
+                    telemetry = {
+                        "rank": self.rank,
+                        "node_id": self.node_id,
+                        "current_batch": self.local_batch_size,
+                        "compute_ms": avg_comp_ms,
+                        "compute_ema_ms": avg_comp_ms,
+                        "runtime_std_ms": 10.0,
+                        "comm_ms": 1600.0,
+                        "idle_ms": 0.0,
+                        "active": self.local_batch_size > 0,
+                    }
+                all_telemetry = self.comm.gather(telemetry, root=0)
+
+                rebalance_action = "KEEP"
+                target_batches = list(self.rank_batch_sizes)
+
+                if self.rank == 0 and self.dynamic_rebalancer is not None and all_telemetry:
+                    current_alloc = {
+                        self.rank_to_node.get(r, f"lab0{r+1}"): self.rank_batch_sizes[r]
+                        for r in range(self.world_size)
+                    }
+                    decision = self.dynamic_rebalancer.decide_rebalance(
+                        epoch=epoch,
+                        telemetry_list=all_telemetry,
+                        current_allocation=current_alloc,
+                        global_batch=self.global_batch_size,
+                        measured_t_critical_ms=slowest_avg_ms + 1600.0,
+                    )
+                    rebalance_action = decision.action
+                    target_alloc = decision.target_allocation
+                    target_batches = [
+                        target_alloc.get(self.rank_to_node.get(r, f"lab0{r+1}"), self.rank_batch_sizes[r])
+                        for r in range(self.world_size)
+                    ]
+
+                    if decision.action == "SWITCH":
+                        self.logger.info("=" * 88)
+                        self.logger.info(f" [DYNAMIC REBALANCER - EPOCH {epoch:03d} WORKLOAD REBALANCED]")
+                        self.logger.info(f"   Old Allocation : {decision.current_allocation}")
+                        self.logger.info(f"   New Allocation : {decision.target_allocation}")
+                        self.logger.info(f"   Predicted Gain : {decision.predicted_gain_pct:.1f}%")
+                        self.logger.info(f"   Reason         : {decision.reason}")
+                        self.logger.info(f"   Overhead       : {decision.scheduler_overhead_ms:.2f} ms")
+                        self.logger.info("=" * 88)
+                    else:
+                        self.logger.info(
+                            f" [DYNAMIC REBALANCER - EPOCH {epoch:03d}] Action: {decision.action} | Reason: {decision.reason}"
+                        )
+
+                rebalance_msg = {
+                    "action": rebalance_action,
+                    "target_batches": target_batches,
+                } if self.rank == 0 else None
+                rebalance_msg = self.comm.bcast(rebalance_msg, root=0)
+
+                if rebalance_msg["action"] == "SWITCH":
+                    new_b = rebalance_msg["target_batches"]
+                    if new_b != self.rank_batch_sizes:
+                        self.rebuild_dataset(new_b)
+                        if self.rank == 0:
+                            self.logger.info(
+                                f"   >>> Successfully re-batched cluster! New rank batches: {self.rank_batch_sizes} "
+                                f"(Global: {self.global_batch_size}, Steps/epoch: {self.steps_per_epoch})"
+                            )
 
             # Force garbage collection across all ranks (vital for 4GB node iciplab03)
             import gc

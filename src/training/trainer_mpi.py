@@ -113,6 +113,17 @@ class MPITrainer(BaseTrainer):
                         "idle_pct",
                         "is_straggler",
                     ])
+        # Phase 1: Step-level Runtime Instrumentation
+        self.runtime_profiler = None
+        if hasattr(self.logger, "run_dir") and self.logger.run_dir:
+            from src.scheduler.profiling.runtime_profiler import RuntimeProfiler
+            fname = "step_metrics.csv" if self.rank == 0 else f"step_metrics_rank{self.rank}.csv"
+            self.runtime_profiler = RuntimeProfiler(
+                output_dir=self.logger.run_dir,
+                node_id=self.hostname,
+                rank=self.rank,
+                filename=fname,
+            )
 
         self.rounds_csv = None
         if self.rank == 0 and hasattr(self.logger, "run_dir") and self.sync_mode == "local_steps":
@@ -787,7 +798,8 @@ class MPITrainer(BaseTrainer):
                 # 1. Forward pass & local gradient computation (Mean of local batch)
                 t_comp_start = time.perf_counter()
                 loss, acc, local_grads = self._compute_local_grads(images, labels)
-                compute_time = time.perf_counter() - t_comp_start
+                t_comp_end = time.perf_counter()
+                compute_time = t_comp_end - t_comp_start
                 total_compute_time += compute_time
 
                 # 2. Timeline Check every sync_interval steps (e.g. step 20, 40, 60...)
@@ -834,8 +846,15 @@ class MPITrainer(BaseTrainer):
                         )
                         self.logger.info("=" * 88)
 
+                # Synchronization barrier before gradient allreduce
+                t_sync_enter = time.perf_counter()
+                self.comm.Barrier()
+                t_sync_exit = time.perf_counter()
+
                 # 3. MPI AllReduce SUM -> / world_size (5)
+                t_comm_start = time.perf_counter()
                 global_grads = self.allreduce_gradients(local_grads)
+                t_comm_end = time.perf_counter()
 
                 # 4. Synchronous verification check for gradients
                 if total_steps_executed % self.sync_interval == 0:
@@ -849,6 +868,21 @@ class MPITrainer(BaseTrainer):
                     self.verify_model_weights(step=total_steps_executed)
 
                 step_time = time.perf_counter() - step_start_time
+
+                # Step-level runtime telemetry recording
+                if hasattr(self, "runtime_profiler") and self.runtime_profiler is not None:
+                    self.runtime_profiler.record_step(
+                        step_id=total_steps_executed,
+                        local_batch=self.local_batch_size,
+                        compute_start=t_comp_start,
+                        compute_end=t_comp_end,
+                        sync_enter=t_sync_enter,
+                        sync_exit=t_sync_exit,
+                        comm_start=t_comm_start,
+                        comm_end=t_comm_end,
+                        step_wall_time=step_time,
+                    )
+
                 total_train_loss += float(loss)
                 total_train_acc += float(acc)
                 step_count += 1

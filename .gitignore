@@ -53,6 +53,7 @@ checkpoints/**
 *.pth
 *.ckpt
 !results/**/.gitkeep
+!profiles/*.csv
 
 # IDE and OS
 .vscode/

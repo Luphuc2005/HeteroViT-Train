@@ -1,0 +1,42 @@
+[
+  {
+    "candidate": "C1 (Uniform 5-node)",
+    "allocation": "lab01:128, lab02:128, lab03:128, lab04:128, lab05:128",
+    "total_batch": 640,
+    "pred_t_crit": 7398.211223091103,
+    "act_t_crit": 7389.075,
+    "pred_tput": 86.50739762639498,
+    "act_tput": 86.61435971349594,
+    "error_pct": 0.1234923255852423
+  },
+  {
+    "candidate": "C2 (Hetero Static 5-node)",
+    "allocation": "lab01:384, lab02:64, lab03:48, lab04:48, lab05:96",
+    "total_batch": 640,
+    "pred_t_crit": 3994.1133983572636,
+    "act_t_crit": 3951.3,
+    "pred_tput": 160.23581109720752,
+    "act_tput": 161.972009212158,
+    "error_pct": 1.0719124393131174
+  },
+  {
+    "candidate": "C3 (Balanced 5-node)",
+    "allocation": "lab01:256, lab02:16, lab03:24, lab04:24, lab05:48",
+    "total_batch": 368,
+    "pred_t_crit": 2663.2824569782474,
+    "act_t_crit": 2690.2,
+    "pred_tput": 138.17535539115582,
+    "act_tput": 136.79280350903278,
+    "error_pct": 1.0106905090454799
+  },
+  {
+    "candidate": "C4 (4-node Drop lab02)",
+    "allocation": "lab01:256, lab02:0, lab03:32, lab04:32, lab05:64",
+    "total_batch": 384,
+    "pred_t_crit": 2932.4444671104143,
+    "act_t_crit": 2969.1,
+    "pred_tput": 130.9487713431067,
+    "act_tput": 129.3321208447004,
+    "error_pct": 1.2499992174005405
+  }
+]

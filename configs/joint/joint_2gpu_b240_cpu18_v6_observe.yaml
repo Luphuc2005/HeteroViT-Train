@@ -1,0 +1,72 @@
+experiment:
+  name: joint_2gpu_b240_cpu18_v6_observe
+
+mode: joint
+seed: 42
+
+dataset:
+  name: cifar10
+  data_dir: ./data/cifar10
+  num_classes: 10
+
+model:
+  name: vit_tiny
+  image_size: 32
+  patch_size: 4
+  embed_dim: 192
+  depth: 6
+  num_heads: 3
+  mlp_dim: 768
+  dropout: 0.1
+
+training:
+  epochs: 20
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+
+joint:
+  gpu_worker:
+    num_gpus: 2
+    cuda_devices: "0,1"
+    batch_size: 240          # 120 per Titan Z GPU (V5 best anchor split)
+    cpu_cores: [0, 1, 2, 3]  # 4 CPU host cores
+    intra_op_threads: 4
+    inter_op_threads: 2
+  cpu_worker:
+    batch_size: 16           # CPU batch = 16 (Total Global Batch = 240 + 16 = 256)
+    cpu_cores: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]  # 18 physical CPU cores
+    intra_op_threads: 18
+    inter_op_threads: 2
+
+dynamic_scheduler:
+  enabled: true
+  apply_changes: false       # Observe-only: absolutely no batch change in runtime
+  global_batch: 256
+  gpu_worker_id: lab01_gpu
+  cpu_worker_id: lab01_cpu
+  workers:
+    lab01_gpu: gpu
+    lab01_cpu: cpu
+  fallback_allocation: {lab01_gpu: 240, lab01_cpu: 16}  # Anchor / reference split
+  candidates:
+    - {lab01_gpu: 232, lab01_cpu: 24}
+    - {lab01_gpu: 236, lab01_cpu: 20}
+    - {lab01_gpu: 240, lab01_cpu: 16}
+    - {lab01_gpu: 244, lab01_cpu: 12}
+    - {lab01_gpu: 248, lab01_cpu: 8}
+  profile_map_path: results/v6_profile_map.csv
+  ema_alpha: 0.15
+  decision_interval_steps: 20
+  cooldown_steps: 20
+  stability_windows: 2
+  critical_tolerance_pct: 1.5
+  min_improvement_pct: 1.0
+  warmup_steps: 10
+  settling_steps: 2
+
+profiling: false
+
+logging:
+  log_interval: 25
+  output_dir: ./results/joint_benchmarks/v6_observe_b240

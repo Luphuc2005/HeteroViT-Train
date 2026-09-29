@@ -70,6 +70,12 @@ def parse_args():
         help="Path to YAML configuration file (e.g., configs/mpi/baseline_5nodes.yaml)",
     )
     parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Number of epochs to train (overrides config file)",
+    )
+    parser.add_argument(
         "--max-steps",
         type=int,
         default=None,
@@ -146,6 +152,8 @@ config = load_config(args.config)
 if "training" not in config:
     config["training"] = {}
 
+if args.epochs is not None:
+    config["training"]["epochs"] = int(args.epochs)
 if args.sync_mode is not None:
     config["training"]["sync_mode"] = args.sync_mode
 if args.local_steps is not None:

@@ -51,6 +51,7 @@ class DynamicRebalancer:
         self.cooldown_epochs = max(0, int(cooldown_epochs))
         self.slowdown_threshold_r = float(slowdown_threshold_r)
         self.log_csv_path = log_csv_path
+        self.nominal_allocation: Optional[Dict[str, int]] = kwargs.get("nominal_allocation", None)
         self.last_switch_epoch: Optional[int] = None
         self.switch_count = 0
         self.decision_count = 0
@@ -117,17 +118,21 @@ class DynamicRebalancer:
                 rank=rank,
             )
 
-        # 2. Check for slowdown anomalies or recovery among active nodes
+        # Initialize nominal allocation from initial cluster allocation if not preset
+        if self.nominal_allocation is None:
+            self.nominal_allocation = dict(current_allocation)
+
+        # 2. Check for slowdown anomalies or recovery among cluster nodes
         slow_nodes = []
         recovered_nodes = []
         for node_id, b in current_allocation.items():
-            if b > 0:
-                r_factor = self.cost_model.compute_correction_factor(node_id)
-                if r_factor >= self.slowdown_threshold_r:
-                    slow_nodes.append((node_id, r_factor))
-                nominal_b = 48 if node_id in ("lab03", "lab04") else (64 if node_id == "lab02" else 96)
-                if b < nominal_b and r_factor <= 1.05:
-                    recovered_nodes.append((node_id, r_factor))
+            r_factor = self.cost_model.compute_correction_factor(node_id)
+            if b > 0 and r_factor >= self.slowdown_threshold_r:
+                slow_nodes.append((node_id, r_factor))
+            default_nom = 48 if node_id in ("lab03", "lab04") else (64 if node_id == "lab02" else 96)
+            nominal_b = self.nominal_allocation.get(node_id, default_nom)
+            if b < nominal_b and r_factor <= 1.05:
+                recovered_nodes.append((node_id, r_factor))
 
         # Sort slow nodes by severity (highest r first)
         slow_nodes.sort(key=lambda x: x[1], reverse=True)
@@ -157,11 +162,24 @@ class DynamicRebalancer:
                 global_batch_size=global_batch,
                 current_allocation=current_allocation,
                 slow_node_id=primary_slow_node,
+                nominal_allocation=self.nominal_allocation,
             )
 
             # Evaluate and rank all candidate allocations
             ranked_evals = self.cost_model.rank_candidates(candidates)
-            best_eval = ranked_evals[0]
+
+            # If recovering without any active slow nodes, prioritize restoring the recovered worker
+            if not slow_nodes and recovered_nodes:
+                rec_node = recovered_nodes[0][0]
+                default_nom = 48 if rec_node in ("lab03", "lab04") else (64 if rec_node == "lab02" else 96)
+                rec_nominal = self.nominal_allocation.get(rec_node, default_nom)
+                restored_evals = [e for e in ranked_evals if e.candidate.get(rec_node, 0) >= rec_nominal]
+                if restored_evals:
+                    best_eval = restored_evals[0]
+                else:
+                    best_eval = ranked_evals[0]
+            else:
+                best_eval = ranked_evals[0]
 
             is_same = (best_eval.candidate == current_allocation)
             gain_pct = 0.0
@@ -172,6 +190,13 @@ class DynamicRebalancer:
             if is_same:
                 action = "KEEP"
                 reason = "current_allocation_is_optimal"
+            elif not slow_nodes and recovered_nodes and best_eval.candidate != current_allocation:
+                # Workload restored back to nominal capacity
+                action = "SWITCH"
+                rec_node = recovered_nodes[0][0]
+                reason = f"{rec_node}_recovery_detected (workload_restored, gain={gain_pct:.1f}%)"
+                self.last_switch_epoch = int(epoch)
+                self.switch_count += 1
             elif (gain_pct / 100.0) <= self.epsilon:
                 action = "KEEP"
                 reason = f"predicted_gain_{gain_pct:.1f}%_below_epsilon_{self.epsilon*100:.1f}%"
@@ -182,9 +207,6 @@ class DynamicRebalancer:
                     node_state = self.cost_model.cluster_state.get_node(primary_slow_node)
                     ema_val = node_state.compute_ema_ms if node_state else 0.0
                     reason = f"{primary_slow_node}_slowdown_detected (r={r_val:.2f}, EMA={ema_val:.0f}ms, gain={gain_pct:.1f}%)"
-                elif recovered_nodes:
-                    rec_node = recovered_nodes[0][0]
-                    reason = f"{rec_node}_recovery_detected (workload_restored, gain={gain_pct:.1f}%)"
                 else:
                     reason = f"throughput_optimization_rebalance (gain={gain_pct:.1f}%)"
                 self.last_switch_epoch = int(epoch)

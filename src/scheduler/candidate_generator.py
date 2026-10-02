@@ -67,6 +67,7 @@ class CandidateGenerator:
         current_allocation: Optional[Dict[str, int]] = None,
         custom_node_options: Optional[Dict[str, List[int]]] = None,
         slow_node_id: Optional[str] = None,
+        nominal_allocation: Optional[Dict[str, int]] = None,
     ) -> List[Dict[str, int]]:
         """Generates valid candidate allocations that sum to global_batch_size.
 
@@ -78,11 +79,13 @@ class CandidateGenerator:
 
         candidates_map: Dict[Tuple[int, ...], Dict[str, int]] = {}
 
+        min_gpu_batch = min(64, int(global_batch_size * 0.4))
+
         def add_candidate(alloc: Dict[str, int]):
             if sum(alloc.values()) != global_batch_size:
                 return
-            # lab01 (GPU) must stay active with at least 128
-            if alloc.get("lab01", 0) < 128:
+            # lab01 (GPU) must stay active with minimum viable batch
+            if alloc.get("lab01", 0) < min_gpu_batch:
                 return
             # All batches must be non-negative
             if any(v < 0 for v in alloc.values()):
@@ -95,7 +98,24 @@ class CandidateGenerator:
         if current_allocation is not None:
             add_candidate(current_allocation)
 
-        # 2. If current allocation provided, generate focused rebalancing candidates
+        # 2. Add Iso-Time Zero-Idle Candidates for arbitrary global batch size
+        try:
+            from src.scheduler.zero_idle_balancer import ZeroIdleBalancer
+            c_iso = ZeroIdleBalancer.solve_optimal_allocation(global_batch_size)
+            add_candidate(c_iso)
+            if slow_node_id:
+                c_iso_deg = ZeroIdleBalancer.solve_optimal_allocation(
+                    global_batch_size, slow_node_id=slow_node_id, slowdown_factor=2.0
+                )
+                add_candidate(c_iso_deg)
+                c_iso_zero = ZeroIdleBalancer.solve_optimal_allocation(
+                    global_batch_size, slow_node_id=slow_node_id, zero_out_straggler=True
+                )
+                add_candidate(c_iso_zero)
+        except Exception:
+            pass
+
+        # 3. If current allocation provided, generate focused rebalancing candidates
         if current_allocation is not None:
             target_slow_nodes = [slow_node_id] if slow_node_id else [n for n in node_order if n != "lab01"]
             for s_node in target_slow_nodes:
@@ -104,7 +124,12 @@ class CandidateGenerator:
                     continue
 
                 # Possible reduced batch sizes for the slow node
-                candidate_reduced_batches = [b for b in options.get(s_node, []) if b < curr_b]
+                avail_opts = set(options.get(s_node, []))
+                avail_opts.add(0)
+                if curr_b > 2:
+                    avail_opts.add(curr_b // 2)
+                candidate_reduced_batches = sorted([b for b in avail_opts if b < curr_b])
+
                 for new_b in candidate_reduced_batches:
                     delta = curr_b - new_b
                     # Option A: Shift all delta to lab01 (GPU)
@@ -114,7 +139,7 @@ class CandidateGenerator:
                     add_candidate(c_to_gpu)
 
                     # Option B: Shift all delta to lab05 (Core i7)
-                    if current_allocation["lab05"] + delta <= max(options["lab05"]):
+                    if current_allocation["lab05"] + delta <= max(options.get("lab05", [96])):
                         c_to_lab5 = dict(current_allocation)
                         c_to_lab5[s_node] = new_b
                         c_to_lab5["lab05"] += delta
@@ -130,13 +155,15 @@ class CandidateGenerator:
                     add_candidate(c_split)
 
             # If a worker was previously reduced (b < nominal) and recovering, test restoring its batch
-            for node in ["lab02", "lab03", "lab04"]:
+            nom = nominal_allocation or {}
+            for node in ["lab02", "lab03", "lab04", "lab05"]:
                 curr_b = current_allocation.get(node, 0)
-                nominal_b = 48 if node in ("lab03", "lab04") else 64
+                default_nom = 48 if node in ("lab03", "lab04") else (64 if node == "lab02" else 96)
+                nominal_b = nom.get(node, default_nom)
                 if curr_b < nominal_b:
                     delta = nominal_b - curr_b
                     # Take delta back from lab01
-                    if current_allocation["lab01"] - delta >= 256:
+                    if current_allocation["lab01"] - delta >= min_gpu_batch:
                         c_restore = dict(current_allocation)
                         c_restore[node] = nominal_b
                         c_restore["lab01"] -= delta

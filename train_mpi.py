@@ -138,6 +138,18 @@ def parse_args():
         default=None,
         help="Exponential moving average alpha for telemetry smoothing",
     )
+    parser.add_argument(
+        "--global-batch",
+        type=int,
+        default=None,
+        help="Target global batch size across all nodes (e.g. 256, 300, 368, 500). Automatically balances workload if auto-balance is active or rank_batch_sizes is omitted.",
+    )
+    parser.add_argument(
+        "--auto-balance",
+        action="store_true",
+        default=False,
+        help="Enable Zero-Idle analytical auto-balancing for the specified global batch size.",
+    )
     return parser.parse_args()
 
 
@@ -161,6 +173,10 @@ if args.local_steps is not None:
     config["training"]["local_steps"] = "full_epoch" if ls_val.lower() == "full_epoch" else int(ls_val)
 if args.opt_sync is not None:
     config["training"]["optimizer_state_sync"] = args.opt_sync
+if args.global_batch is not None:
+    config["training"]["global_batch_size"] = int(args.global_batch)
+if args.auto_balance:
+    config["training"]["auto_balance"] = True
 
 if "dynamic_scheduler" not in config:
     config["dynamic_scheduler"] = {}
@@ -283,14 +299,51 @@ if rank != 0:
             h.setLevel(logging.WARNING)
 
 training_cfg = config.get("training", {})
-rank_batch_sizes = training_cfg.get("rank_batch_sizes", None)
-if rank_batch_sizes is not None:
-    rank_batch_sizes = [int(b) for b in rank_batch_sizes]
+auto_balance = bool(training_cfg.get("auto_balance", False))
+raw_rank_batch_sizes = training_cfg.get("rank_batch_sizes", None)
+
+if auto_balance or raw_rank_batch_sizes == "auto" or (args.global_batch is not None and raw_rank_batch_sizes is None):
+    from src.scheduler.zero_idle_balancer import ZeroIdleBalancer
+    target_gb = int(training_cfg.get("global_batch_size", args.global_batch or 300))
+    alloc_map = ZeroIdleBalancer.solve_optimal_allocation(target_gb)
+    rank_to_node = {0: "lab01", 1: "lab02", 2: "lab03", 3: "lab04", 4: "lab05"}
+    rank_batch_sizes = [alloc_map.get(rank_to_node.get(r, f"lab0{r+1}"), 0) for r in range(world_size)]
+
+    # Broadcast to ensure rank sync
+    rank_batch_sizes = comm.bcast(rank_batch_sizes, root=0)
+    local_batch_size = rank_batch_sizes[rank]
+    global_batch = sum(rank_batch_sizes)
+
+    if rank == 0:
+        timings = ZeroIdleBalancer.estimate_per_node_timings(alloc_map)
+        logger.info("=" * 88)
+        logger.info(f" [ZERO-IDLE BALANCER] Target Global Batch = {target_gb} -> Solved Global Batch = {global_batch}")
+        logger.info(f"   Optimal Per-Rank Allocation : {rank_batch_sizes}")
+        for r in range(world_size):
+            n = rank_to_node.get(r, f"lab0{r+1}")
+            logger.info(f"   * Rank {r} [{n:6s}]: batch = {rank_batch_sizes[r]:3d} | Est. Compute = {timings.get(n, 0):.1f} ms")
+        gpu_t = timings.get("lab01", 0)
+        if world_size > 1:
+            slowest_cpu = max(timings.get(rank_to_node.get(r, ""), 0) for r in range(1, world_size))
+            pred_idle = max(0.0, slowest_cpu - gpu_t)
+            idle_pct = (pred_idle / slowest_cpu * 100) if slowest_cpu > 0 else 0
+            logger.info(f"   >>> Predicted GPU Idle: {pred_idle:.1f} ms ({idle_pct:.1f}%) [Collapsed from ~1980 ms!]")
+        else:
+            logger.info(f"   >>> Single-node run: GPU compute = {gpu_t:.1f} ms")
+        logger.info("=" * 88)
+elif raw_rank_batch_sizes is not None:
+    rank_batch_sizes = [int(b) for b in raw_rank_batch_sizes]
     local_batch_size = rank_batch_sizes[rank]
     global_batch = sum(rank_batch_sizes)
 else:
     local_batch_size = int(training_cfg.get("batch_size", 128))
     global_batch = local_batch_size * world_size
+    rank_batch_sizes = [local_batch_size] * world_size
+
+# Update config dict so trainer receives correct parameters
+config["training"]["rank_batch_sizes"] = rank_batch_sizes
+config["training"]["batch_size"] = local_batch_size
+config["training"]["global_batch_size"] = global_batch
 
 dataset_cfg = config.get("dataset", {})
 data_dir = dataset_cfg.get("data_dir", "./data/cifar10")

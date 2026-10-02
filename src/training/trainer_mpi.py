@@ -8,6 +8,7 @@ Supports:
 """
 import os
 import time
+import csv
 from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 import tensorflow as tf
@@ -77,9 +78,12 @@ class MPITrainer(BaseTrainer):
         self.micro_batch_size = self.local_batch_size
         if self.rank == 0 and grad_accum_cfg.get("enabled", False):
             mb = int(grad_accum_cfg.get("micro_batch_size", 128))
-            if self.local_batch_size > mb:
-                self.accum_steps = self.local_batch_size // mb
-                self.micro_batch_size = mb
+            num_reps = self.strategy.num_replicas_in_sync if self.strategy is not None else 1
+            rep_b = self.local_batch_size // max(1, num_reps)
+            if rep_b > mb:
+                divs = [d for d in range(2, rep_b + 1) if rep_b % d == 0 and rep_b // d <= mb]
+                self.accum_steps = min(divs) if divs else max(1, rep_b // mb)
+                self.micro_batch_size = self.local_batch_size // self.accum_steps
 
         import socket
         self.hostname = socket.gethostname()
@@ -133,7 +137,6 @@ class MPITrainer(BaseTrainer):
             self.timeline_csv = os.path.join(self.logger.run_dir, "ranks_timeline.csv")
             if not os.path.exists(self.timeline_csv):
                 with open(self.timeline_csv, "w", newline="", encoding="utf-8") as f:
-                    import csv
                     writer = csv.writer(f)
                     writer.writerow([
                         "epoch",
@@ -162,12 +165,32 @@ class MPITrainer(BaseTrainer):
                 filename=fname,
             )
 
+        # Step-level Detailed Timing Breakdown CSV (all ranks per step)
+        self.step_timing_csv = None
+        if self.rank == 0 and hasattr(self.logger, "run_dir") and self.logger.run_dir:
+            self.step_timing_csv = os.path.join(self.logger.run_dir, "step_timing_breakdown.csv")
+            if not os.path.exists(self.step_timing_csv):
+                with open(self.step_timing_csv, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "epoch",
+                        "step",
+                        "rank",
+                        "batch",
+                        "data_ms",
+                        "compute_ms",
+                        "allreduce_ms",
+                        "optimizer_ms",
+                        "barrier_ms",
+                        "other_ms",
+                        "step_ms",
+                    ])
+
         self.rounds_csv = None
         if self.rank == 0 and hasattr(self.logger, "run_dir") and self.sync_mode == "local_steps":
             self.rounds_csv = os.path.join(self.logger.run_dir, "rounds_timeline.csv")
             if not os.path.exists(self.rounds_csv):
                 with open(self.rounds_csv, "w", newline="", encoding="utf-8") as f:
-                    import csv
                     writer = csv.writer(f)
                     writer.writerow([
                         "epoch",
@@ -394,9 +417,12 @@ class MPITrainer(BaseTrainer):
         self.micro_batch_size = self.local_batch_size
         if self.rank == 0 and grad_accum_cfg.get("enabled", False):
             mb = int(grad_accum_cfg.get("micro_batch_size", 128))
-            if self.local_batch_size > mb:
-                self.accum_steps = self.local_batch_size // mb
-                self.micro_batch_size = mb
+            num_reps = self.strategy.num_replicas_in_sync if self.strategy is not None else 1
+            rep_b = self.local_batch_size // max(1, num_reps)
+            if rep_b > mb:
+                divs = [d for d in range(2, rep_b + 1) if rep_b % d == 0 and rep_b // d <= mb]
+                self.accum_steps = min(divs) if divs else max(1, rep_b // mb)
+                self.micro_batch_size = self.local_batch_size // self.accum_steps
 
         from src.data.cifar10 import build_cifar10_datasets
         dataset_cfg = self.config.get("dataset", {})
@@ -432,7 +458,12 @@ class MPITrainer(BaseTrainer):
 
         self._setup_step_functions()
 
-    def allreduce_gradients(self, local_grads: List[tf.Tensor]) -> List[tf.Tensor]:
+    def allreduce_gradients(
+        self,
+        local_grads: List[tf.Tensor],
+        pre_packed_parts: Optional[List[np.ndarray]] = None,
+        pre_grad_metadata: Optional[List[Tuple[int, Tuple[int, ...], int, tf.DType]]] = None,
+    ) -> List[tf.Tensor]:
         """AllReduce all weighted local gradients in one fused MPI buffer.
         
         Formula:
@@ -440,23 +471,35 @@ class MPITrainer(BaseTrainer):
         """
         local_batch = float(self.local_batch_size)
         global_batch = float(self.global_batch_size)
-        flat_parts = []
-        grad_metadata = []
 
-        # Pack every non-None gradient into one contiguous float32 buffer. Keep
-        # enough metadata to restore the original list, shapes, and dtypes.
-        for index, local_grad in enumerate(local_grads):
-            if local_grad is None:
-                continue
-
-            grad_np = local_grad.numpy().astype(np.float32, copy=False)
-            flat_parts.append(grad_np.reshape(-1))
-            grad_metadata.append(
-                (index, grad_np.shape, grad_np.size, local_grad.dtype)
-            )
+        if pre_packed_parts is not None and pre_grad_metadata is not None:
+            flat_parts = pre_packed_parts
+            grad_metadata = pre_grad_metadata
+        else:
+            flat_parts = []
+            grad_metadata = []
+            for index, local_grad in enumerate(local_grads):
+                if local_grad is None:
+                    continue
+                grad_np = local_grad.numpy().astype(np.float32, copy=False)
+                flat_parts.append(grad_np.reshape(-1))
+                grad_metadata.append(
+                    (index, grad_np.shape, grad_np.size, local_grad.dtype)
+                )
 
         global_grads = [None] * len(local_grads)
         if not flat_parts:
+            total_elements = sum(v.shape.num_elements() for v in self.model.trainable_variables)
+            fused_local = np.zeros(total_elements, dtype=np.float32)
+            fused_sum = np.empty_like(fused_local)
+            self.comm.Allreduce(fused_local, fused_sum, op=MPI.SUM)
+            fused_global = fused_sum / global_batch
+            offset = 0
+            for index, v in enumerate(self.model.trainable_variables):
+                size = v.shape.num_elements()
+                grad_np = fused_global[offset:offset + size].reshape(v.shape)
+                global_grads[index] = tf.convert_to_tensor(grad_np, dtype=v.dtype)
+                offset += size
             return global_grads
 
         fused_local = np.concatenate(flat_parts).astype(np.float32, copy=False)
@@ -733,7 +776,6 @@ class MPITrainer(BaseTrainer):
                     # Write to rounds_timeline.csv
                     if hasattr(self, "rounds_csv") and self.rounds_csv:
                         with open(self.rounds_csv, "a", newline="", encoding="utf-8") as f:
-                            import csv
                             writer = csv.writer(f)
                             for r_info in sorted(all_round_info, key=lambda x: x["rank"]):
                                 writer.writerow([
@@ -884,93 +926,166 @@ class MPITrainer(BaseTrainer):
                 step_start_time = time.perf_counter()
                 total_steps_executed += 1
 
-                # 1. Forward pass & local gradient computation (Mean of local batch)
+                # 1. Measure data fetching time (data_ms)
+                t_data_start = time.perf_counter()
                 if self.local_batch_size > 0 and train_iter is not None:
                     try:
                         images, labels = next(train_iter)
                     except StopIteration:
                         train_iter = iter(self.dist_train_ds)
                         images, labels = next(train_iter)
-
-                    t_comp_start = time.perf_counter()
-                    loss, acc, local_grads = self._compute_local_grads(images, labels)
-                    t_comp_end = time.perf_counter()
                 else:
-                    t_comp_start = time.perf_counter()
+                    images, labels = None, None
+                t_data_end = time.perf_counter()
+                data_ms = (t_data_end - t_data_start) * 1000.0
+
+                # 2. Forward pass & local gradient computation (compute_ms)
+                # Ensure GPU TensorFlow completes execution before stopping timer (not just host enqueue)
+                t_comp_start = time.perf_counter()
+                packed_flat_grads = []
+                grad_metadata = []
+                if self.local_batch_size > 0 and images is not None:
+                    loss, acc, local_grads = self._compute_local_grads(images, labels)
+                    # Converting gradients to host NumPy array forces GPU stream synchronization (cudaMemcpy),
+                    # guaranteeing all forward & backward GPU kernels are fully completed.
+                    for idx, local_grad in enumerate(local_grads):
+                        if local_grad is not None:
+                            grad_np = local_grad.numpy().astype(np.float32, copy=False)
+                            packed_flat_grads.append(grad_np.reshape(-1))
+                            grad_metadata.append(
+                                (idx, grad_np.shape, grad_np.size, local_grad.dtype)
+                            )
+                else:
                     loss = tf.constant(0.0, dtype=tf.float32)
                     acc = tf.constant(0.0, dtype=tf.float32)
                     local_grads = [tf.zeros_like(v) for v in self.model.trainable_variables]
-                    t_comp_end = time.perf_counter()
 
-                compute_time = t_comp_end - t_comp_start
-                total_compute_time += compute_time
+                t_comp_end = time.perf_counter()
+                compute_ms = (t_comp_end - t_comp_start) * 1000.0
+                total_compute_time += (t_comp_end - t_comp_start)
 
-                # 2. Timeline Check every sync_interval steps (e.g. step 20, 40, 60...)
-                if total_steps_executed % self.sync_interval == 0:
-                    step_timing = {
-                        "rank": self.rank,
-                        "host": self.hostname,
-                        "device": self.device_str,
-                        "batch": self.local_batch_size,
-                        "compute_ms": compute_time * 1000.0,
-                    }
-                    all_step_timings = self.comm.gather(step_timing, root=0)
-                    if self.rank == 0 and all_step_timings:
-                        slowest_ms = max(t["compute_ms"] for t in all_step_timings)
-                        fastest_ms = min(t["compute_ms"] for t in all_step_timings)
-                        speedup = slowest_ms / max(fastest_ms, 1e-6)
-
-                        self.logger.info("=" * 88)
-                        self.logger.info(
-                            f" [STEP {total_steps_executed:04d} TIMELINE: AI XONG TRƯỚC - AI PHẢI ĐỢI?]"
-                        )
-                        self.logger.info("-" * 88)
-                        sorted_timings = sorted(all_step_timings, key=lambda x: x["compute_ms"])
-                        for rank_info in sorted_timings:
-                            r = rank_info["rank"]
-                            h = rank_info["host"]
-                            dev = rank_info["device"]
-                            b = rank_info.get("batch", self.local_batch_size)
-                            c_ms = rank_info["compute_ms"]
-                            wait_ms = slowest_ms - c_ms
-                            wait_pct = (wait_ms / slowest_ms * 100.0) if slowest_ms > 0 else 0.0
-
-                            if wait_ms <= 1.0:
-                                status = f"VỀ BÉT (CỔ CHAI {c_ms:7.1f}ms - BẮT CẢ CỤM PHẢI CHỜ)"
-                            elif r == 0:
-                                status = f"Xong lúc {c_ms:5.1f}ms -> ĐÃ ĐỢI {wait_ms:6.1f}ms ({wait_pct:4.1f}% rảnh rỗi)"
-                            else:
-                                status = f"Xong lúc {c_ms:7.1f}ms -> Đã đợi {wait_ms:6.1f}ms"
-
-                            self.logger.info(f"   * Rank {r} [{h:9s} - {dev:5s} (batch={b:<3d})]: {status}")
-                        self.logger.info("-" * 88)
-                        self.logger.info(
-                            f"   >>> Tỷ lệ chênh lệch: Rank 0 nhanh gấp {speedup:.1f}x so với nút cổ chai chậm nhất!"
-                        )
-                        self.logger.info("=" * 88)
-
-                # Synchronization barrier before gradient allreduce
-                t_sync_enter = time.perf_counter()
+                # 3. Synchronization barrier before gradient allreduce (barrier_ms)
+                # Measures waiting time of faster ranks waiting for stragglers to reach the sync point
+                t_bar_start = time.perf_counter()
                 self.comm.Barrier()
-                t_sync_exit = time.perf_counter()
+                t_bar_end = time.perf_counter()
+                barrier_ms = (t_bar_end - t_bar_start) * 1000.0
 
-                # 3. MPI AllReduce SUM -> / world_size (5)
+                # 4. MPI AllReduce SUM -> / global_batch_size (allreduce_ms)
                 t_comm_start = time.perf_counter()
-                global_grads = self.allreduce_gradients(local_grads)
+                global_grads = self.allreduce_gradients(
+                    local_grads,
+                    pre_packed_parts=packed_flat_grads,
+                    pre_grad_metadata=grad_metadata,
+                )
                 t_comm_end = time.perf_counter()
+                allreduce_ms = (t_comm_end - t_comm_start) * 1000.0
 
-                # 4. Synchronous verification check for gradients
+                # Synchronous verification check for gradients (if sync_interval)
                 if total_steps_executed % self.sync_interval == 0:
                     self.verify_gradients(global_grads, step=total_steps_executed)
 
-                # 5. Apply globally-averaged gradients
+                # 5. Apply globally-averaged gradients (optimizer_ms)
+                t_opt_start = time.perf_counter()
                 self._apply_global_grads(global_grads)
+                if self.rank == 0 and self.num_gpus > 0:
+                    # Synchronize optimizer weight updates to GPU memory
+                    _ = self.model.trainable_variables[0].numpy()
+                t_opt_end = time.perf_counter()
+                optimizer_ms = (t_opt_end - t_opt_start) * 1000.0
 
-                # 6. Synchronous verification check for weights
+                # Synchronous verification check for weights (if sync_interval)
                 if total_steps_executed % self.sync_interval == 0:
                     self.verify_model_weights(step=total_steps_executed)
 
-                step_time = time.perf_counter() - step_start_time
+                # 6. Step wall time & other_ms
+                step_end_time = time.perf_counter()
+                step_time = step_end_time - step_start_time
+                step_ms = step_time * 1000.0
+                accounted_ms = data_ms + compute_ms + allreduce_ms + optimizer_ms + barrier_ms
+                other_ms = max(0.0, step_ms - accounted_ms)
+
+                # 7. Gather detailed timing metrics across all ranks
+                local_timing = {
+                    "epoch": epoch,
+                    "step": step,
+                    "rank": self.rank,
+                    "host": self.hostname,
+                    "device": self.device_str,
+                    "batch": self.local_batch_size,
+                    "data_ms": round(data_ms, 2),
+                    "compute_ms": round(compute_ms, 2),
+                    "allreduce_ms": round(allreduce_ms, 2),
+                    "optimizer_ms": round(optimizer_ms, 2),
+                    "barrier_ms": round(barrier_ms, 2),
+                    "other_ms": round(other_ms, 2),
+                    "step_ms": round(step_ms, 2),
+                }
+                all_rank_timings = self.comm.gather(local_timing, root=0)
+
+                # 8. Record to CSV and Periodic Rank 0 Terminal Logging
+                if self.rank == 0 and all_rank_timings:
+                    if self.step_timing_csv:
+                        with open(self.step_timing_csv, "a", newline="", encoding="utf-8") as f:
+                            csv_w = csv.writer(f)
+                            for t_item in all_rank_timings:
+                                csv_w.writerow([
+                                    t_item["epoch"],
+                                    t_item["step"],
+                                    t_item["rank"],
+                                    t_item["batch"],
+                                    f"{t_item['data_ms']:.2f}",
+                                    f"{t_item['compute_ms']:.2f}",
+                                    f"{t_item['allreduce_ms']:.2f}",
+                                    f"{t_item['optimizer_ms']:.2f}",
+                                    f"{t_item['barrier_ms']:.2f}",
+                                    f"{t_item['other_ms']:.2f}",
+                                    f"{t_item['step_ms']:.2f}",
+                                ])
+
+                    critical_compute_ms = max(t_item["compute_ms"] for t_item in all_rank_timings)
+                    r0_timing = next(t_item for t_item in all_rank_timings if t_item["rank"] == 0)
+                    gpu_compute_ms = r0_timing["compute_ms"]
+                    gpu_idle_ms = max(0.0, critical_compute_ms - gpu_compute_ms)
+                    comm_ratio_pct = (r0_timing["allreduce_ms"] / max(r0_timing["step_ms"], 1e-6)) * 100.0
+
+                    is_smoke = self.max_steps is not None and self.max_steps <= 10
+                    is_periodic = (step % self.log_interval == 0 or step == self.steps_per_epoch or is_smoke)
+
+                    if is_periodic:
+                        self.logger.info("=" * 102)
+                        self.logger.info(
+                            f" [STEP TIMING BREAKDOWN - EPOCH {epoch:02d} STEP {step:04d}/{self.steps_per_epoch:04d}]"
+                        )
+                        self.logger.info(
+                            f"   {'Rank':<5} {'Host':<9} {'Device':<6} {'Batch':<6} "
+                            f"{'Data(ms)':<9} {'Compute(ms)':<12} {'Barrier(ms)':<12} "
+                            f"{'AllReduce(ms)':<14} {'Opt(ms)':<8} {'Other(ms)':<10} {'Step(ms)':<9}"
+                        )
+                        self.logger.info("   " + "-" * 98)
+                        for t_item in sorted(all_rank_timings, key=lambda x: x["rank"]):
+                            self.logger.info(
+                                f"   {t_item['rank']:<5} {t_item['host']:<9} {t_item['device']:<6} {t_item['batch']:<6} "
+                                f"{t_item['data_ms']:>8.2f} {t_item['compute_ms']:>11.2f} {t_item['barrier_ms']:>11.2f} "
+                                f"{t_item['allreduce_ms']:>13.2f} {t_item['optimizer_ms']:>7.2f} {t_item['other_ms']:>9.2f} {t_item['step_ms']:>8.2f}"
+                            )
+                        self.logger.info("   " + "-" * 98)
+                        slowest_item = max(all_rank_timings, key=lambda x: x["compute_ms"])
+                        self.logger.info(
+                            f"   >>> Critical Compute (Slowest Node): {critical_compute_ms:6.2f} ms ({slowest_item['host']} - Rank {slowest_item['rank']})"
+                        )
+                        self.logger.info(
+                            f"   >>> GPU Compute (Rank 0)           : {gpu_compute_ms:6.2f} ms"
+                        )
+                        self.logger.info(
+                            f"   >>> GPU Idle Wait (Compute Imbal.) : {gpu_idle_ms:6.2f} ms "
+                            f"({(gpu_idle_ms / critical_compute_ms * 100.0) if critical_compute_ms > 0 else 0.0:4.1f}% of compute)"
+                        )
+                        self.logger.info(
+                            f"   >>> Communication Ratio (AllReduce): {comm_ratio_pct:5.1f}% of total step time "
+                            f"({r0_timing['allreduce_ms']:.1f} ms / {r0_timing['step_ms']:.1f} ms)"
+                        )
+                        self.logger.info("=" * 102)
 
                 # Step-level runtime telemetry recording
                 if hasattr(self, "runtime_profiler") and self.runtime_profiler is not None:
@@ -979,11 +1094,11 @@ class MPITrainer(BaseTrainer):
                         local_batch=self.local_batch_size,
                         compute_start=t_comp_start,
                         compute_end=t_comp_end,
-                        sync_enter=t_sync_enter,
-                        sync_exit=t_sync_exit,
+                        sync_enter=t_bar_start,
+                        sync_exit=t_bar_end,
                         comm_start=t_comm_start,
                         comm_end=t_comm_end,
-                        step_wall_time=step_time,
+                        step_wall_time=step_ms / 1000.0,
                     )
 
                 total_train_loss += float(loss)
@@ -1082,7 +1197,6 @@ class MPITrainer(BaseTrainer):
                     # Save to CSV
                     if hasattr(self, "timeline_csv") and self.timeline_csv:
                         with open(self.timeline_csv, "a", newline="", encoding="utf-8") as f:
-                            import csv
                             csv.writer(f).writerow([
                                 epoch, r, h, dev, b, f"{l:.5f}", f"{a:.5f}",
                                 f"{c_ms:.2f}", f"{w_ms:.2f}", f"{idle_pct:.2f}", is_straggler

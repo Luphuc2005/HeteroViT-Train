@@ -150,6 +150,19 @@ def parse_args():
         default=False,
         help="Enable Zero-Idle analytical auto-balancing for the specified global batch size.",
     )
+    parser.add_argument(
+        "--comm-backend",
+        type=str,
+        default=None,
+        choices=["allreduce", "master_aggregation", "ps"],
+        help="Gradient communication backend: 'allreduce' (default) or 'master_aggregation'",
+    )
+    parser.add_argument(
+        "--ps-agg-threads",
+        type=int,
+        default=None,
+        help="Number of worker threads on rank 0 for parallel gradient chunk aggregation (e.g. 1, 4, 8, 12, 18)",
+    )
     return parser.parse_args()
 
 
@@ -177,6 +190,10 @@ if args.global_batch is not None:
     config["training"]["global_batch_size"] = int(args.global_batch)
 if args.auto_balance:
     config["training"]["auto_balance"] = True
+if args.comm_backend is not None:
+    config["training"]["comm_backend"] = args.comm_backend
+if args.ps_agg_threads is not None:
+    config["training"]["ps_agg_threads"] = int(args.ps_agg_threads)
 
 if "dynamic_scheduler" not in config:
     config["dynamic_scheduler"] = {}
@@ -423,6 +440,9 @@ if rank == 0:
     print(f"  Global Batch Size : {global_batch} ({batch_detail})", flush=True)
     print(f"  Steps per Epoch   : {steps_per_epoch} (drop_remainder={drop_remainder})", flush=True)
     print(f"  Sync Check Policy : Every {training_cfg.get('sync_interval', 20)} steps (tolerance: {sync_tolerance:.1e})", flush=True)
+    comm_backend_str = training_cfg.get("comm_backend", "allreduce")
+    ps_threads_str = f" ({training_cfg.get('ps_agg_threads', 12)} aggregation threads)" if comm_backend_str in ("master_aggregation", "master_agg", "ps") else ""
+    print(f"  Comm Backend      : {comm_backend_str}{ps_threads_str}", flush=True)
     print("=" * 80, flush=True)
     logger.info(f"Loaded config from: {args.config}")
     logger.info(f"Execution: MPI Distributed ({world_size} ranks) | Seed: {seed} | Mode: {sync_mode_str}")

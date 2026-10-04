@@ -9,6 +9,7 @@ Supports:
 import os
 import time
 import csv
+import concurrent.futures
 from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 import tensorflow as tf
@@ -165,6 +166,15 @@ class MPITrainer(BaseTrainer):
                 filename=fname,
             )
 
+        # Communication Backend Configuration: allreduce vs master_aggregation
+        self.comm_backend = str(training_cfg.get("comm_backend", "allreduce")).lower()
+        self.ps_agg_threads = int(training_cfg.get("ps_agg_threads", 12))
+        self.agg_executor = None
+        self.ps_recv_buffers = None
+        self.ps_fused_global = None
+        self.ps_chunks = []
+        self.total_grad_elements = 0
+
         # Step-level Detailed Timing Breakdown CSV (all ranks per step)
         self.step_timing_csv = None
         if self.rank == 0 and hasattr(self.logger, "run_dir") and self.logger.run_dir:
@@ -184,6 +194,10 @@ class MPITrainer(BaseTrainer):
                         "barrier_ms",
                         "other_ms",
                         "step_ms",
+                        "recv_ms",
+                        "aggregate_ms",
+                        "broadcast_ms",
+                        "ps_total_ms",
                     ])
 
         self.rounds_csv = None
@@ -229,6 +243,7 @@ class MPITrainer(BaseTrainer):
             self.dist_val_ds = self.val_ds
 
         self._setup_step_functions()
+        self._init_comm_backend()
 
     def _setup_step_functions(self):
         """Builds graph-compiled local gradient computation and weight application functions."""
@@ -457,6 +472,217 @@ class MPITrainer(BaseTrainer):
             self.steps_per_epoch = 45000 // max(self.global_batch_size, 1)
 
         self._setup_step_functions()
+
+    def _init_comm_backend(self):
+        """Initializes gradient communication structures and thread pool."""
+        self.total_grad_elements = sum(v.shape.num_elements() for v in self.model.trainable_variables)
+        self._ps_step = 0
+
+        if self.comm_backend in ("master_aggregation", "master_agg", "ps"):
+            # Pre-allocate contiguous FP32 buffer for global gradient (used by all ranks in MPI_Bcast)
+            self.ps_fused_global = np.zeros(self.total_grad_elements, dtype=np.float32)
+
+            if self.rank == 0:
+                # 1. Isolate Rank 0 main process, TF, GPU driver & DataLoader strictly on NUMA 0 (Socket 0)
+                # On dual-socket Lab01 (Xeon E5-2670 v3):
+                # NUMA 0: physical cores 0-11, hyperthreads 24-35 (where Titan Z GPUs are physically attached)
+                # NUMA 1: physical cores 12-23, hyperthreads 36-47 (no GPUs, dedicated for aggregation)
+                num_logical = os.cpu_count() or 1
+                if num_logical >= 48:
+                    numa0_cores = set(range(12)) | set(range(24, 36))
+                    numa1_phys = list(range(12, 24))
+                    numa1_ht = list(range(36, 48))
+                elif num_logical >= 24:
+                    numa0_cores = set(range(num_logical // 2))
+                    numa1_phys = list(range(num_logical // 2, num_logical))
+                    numa1_ht = []
+                else:
+                    numa0_cores = set(range(num_logical))
+                    numa1_phys = list(range(num_logical))
+                    numa1_ht = []
+
+                try:
+                    os.sched_setaffinity(0, numa0_cores)
+                except Exception:
+                    pass
+
+                # Pre-allocate receive buffers on rank 0 for workers 1 .. world_size - 1
+                self.ps_recv_buffers = {
+                    r: np.zeros(self.total_grad_elements, dtype=np.float32)
+                    for r in range(1, self.world_size)
+                }
+
+                # Partition fused gradient into contiguous disjoint chunks for parallel aggregation
+                num_chunks = max(1, self.ps_agg_threads)
+                chunk_size = (self.total_grad_elements + num_chunks - 1) // num_chunks
+                self.ps_chunks = []
+                self.ps_assigned_cores = []
+
+                # Assign chunk threads to NUMA 1 physical cores first, then NUMA 1 HT if needed
+                avail_pool_cores = numa1_phys + numa1_ht if numa1_ht else numa1_phys
+                for i in range(num_chunks):
+                    s = i * chunk_size
+                    e = min(s + chunk_size, self.total_grad_elements)
+                    if s < self.total_grad_elements:
+                        self.ps_chunks.append((s, e))
+                        core_target = avail_pool_cores[i % len(avail_pool_cores)]
+                        self.ps_assigned_cores.append(core_target)
+
+                if len(self.ps_chunks) > 1:
+                    self.agg_executor = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=len(self.ps_chunks),
+                        thread_name_prefix="PSAggWorker",
+                    )
+                else:
+                    self.agg_executor = None
+
+                self.logger.info(
+                    f"[COMM BACKEND] Initialized 'master_aggregation' backend:\n"
+                    f"   * Total grad elements : {self.total_grad_elements:,} ({self.total_grad_elements * 4 / (1024 * 1024):.2f} MB float32)\n"
+                    f"   * NUMA 0 (GPU & Loader): Pinned to cores 0-11, 24-35 (Socket 0 local PCIe)\n"
+                    f"   * NUMA 1 (Agg Pool)   : {len(self.ps_chunks)} chunks pinned to cores {self.ps_assigned_cores}\n"
+                    f"   * Worker Recv Buffers : Ranks {list(self.ps_recv_buffers.keys())}"
+                )
+
+    def master_aggregate_gradients(
+        self,
+        local_grads: List[tf.Tensor],
+        pre_packed_parts: Optional[List[np.ndarray]] = None,
+        pre_grad_metadata: Optional[List[Tuple[int, Tuple[int, ...], int, tf.DType]]] = None,
+    ) -> Tuple[List[tf.Tensor], float, float, float, float]:
+        """Aggregates gradients via Master (Rank 0) thread pool + MPI Broadcast.
+
+        Protocol:
+          1. Workers (ranks 1..W-1) pack local gradients * local_batch and Isend to Rank 0.
+          2. Master posts Irecv for all workers concurrently, then MPI.Request.Waitall.
+          3. Master aggregates chunks in parallel via ThreadPoolExecutor:
+             fused_global[s:e] = (fused_local[s:e] + sum_r(recv_buf[r][s:e])) / global_batch
+          4. Master broadcasts fused_global to all ranks via MPI_Bcast.
+          5. All ranks unpack fused_global into TensorFlow tensors.
+
+        Returns:
+          (global_grads, recv_ms, aggregate_ms, broadcast_ms, ps_total_ms)
+        """
+        local_batch = float(self.local_batch_size)
+        global_batch = float(self.global_batch_size)
+        inv_global_batch = 1.0 / max(global_batch, 1.0)
+
+        # 1. Flatten and pack local gradients
+        if pre_packed_parts is not None and pre_grad_metadata is not None:
+            flat_parts = pre_packed_parts
+            grad_metadata = pre_grad_metadata
+        else:
+            flat_parts = []
+            grad_metadata = []
+            for index, local_grad in enumerate(local_grads):
+                if local_grad is None:
+                    continue
+                grad_np = local_grad.numpy().astype(np.float32, copy=False)
+                flat_parts.append(grad_np.reshape(-1))
+                grad_metadata.append(
+                    (index, grad_np.shape, grad_np.size, local_grad.dtype)
+                )
+
+        if not flat_parts:
+            fused_local = np.zeros(self.total_grad_elements, dtype=np.float32)
+        else:
+            fused_local = np.concatenate(flat_parts).astype(np.float32, copy=False)
+            fused_local *= local_batch
+
+        # Unique tag per step to prevent message interleaving
+        tag = 100 + (self._ps_step % 1000)
+        self._ps_step += 1
+
+        recv_ms = 0.0
+        aggregate_ms = 0.0
+        broadcast_ms = 0.0
+
+        if self.world_size == 1:
+            # Single rank: scale local gradients directly
+            t_agg_start = time.perf_counter()
+            self.ps_fused_global[:] = fused_local * inv_global_batch
+            t_agg_end = time.perf_counter()
+            aggregate_ms = (t_agg_end - t_agg_start) * 1000.0
+        elif self.rank == 0:
+            # MASTER (RANK 0)
+            # A. Concurrently receive fused gradients from all workers
+            t_recv_start = time.perf_counter()
+            recv_reqs = []
+            for r in range(1, self.world_size):
+                req = self.comm.Irecv(self.ps_recv_buffers[r], source=r, tag=tag)
+                recv_reqs.append(req)
+            MPI.Request.Waitall(recv_reqs)
+            t_recv_end = time.perf_counter()
+            recv_ms = (t_recv_end - t_recv_start) * 1000.0
+
+            # B. Parallel Chunk Aggregation across thread pool
+            t_agg_start = time.perf_counter()
+            worker_ranks = list(range(1, self.world_size))
+
+            def _aggregate_slice(start: int, end: int, core_id: Optional[int] = None):
+                if core_id is not None:
+                    try:
+                        os.sched_setaffinity(0, {core_id})
+                    except Exception:
+                        pass
+                target = self.ps_fused_global[start:end]
+                np.copyto(target, fused_local[start:end])
+                for wr in worker_ranks:
+                    target += self.ps_recv_buffers[wr][start:end]
+                target *= inv_global_batch
+
+            if self.agg_executor is not None and len(self.ps_chunks) > 1:
+                futures = [
+                    self.agg_executor.submit(_aggregate_slice, s, e, self.ps_assigned_cores[i])
+                    for i, (s, e) in enumerate(self.ps_chunks)
+                ]
+                concurrent.futures.wait(futures)
+            else:
+                for i, (s, e) in enumerate(self.ps_chunks):
+                    core = self.ps_assigned_cores[i] if hasattr(self, "ps_assigned_cores") and self.ps_assigned_cores else None
+                    _aggregate_slice(s, e, core)
+            t_agg_end = time.perf_counter()
+            aggregate_ms = (t_agg_end - t_agg_start) * 1000.0
+
+            # C. Broadcast averaged global gradient to all workers
+            t_bcast_start = time.perf_counter()
+            self.comm.Bcast(self.ps_fused_global, root=0)
+            t_bcast_end = time.perf_counter()
+            broadcast_ms = (t_bcast_end - t_bcast_start) * 1000.0
+        else:
+            # WORKER (RANKS 1 .. W-1)
+            # A. Send weighted local gradient to Master
+            t_send_start = time.perf_counter()
+            req = self.comm.Isend(fused_local, dest=0, tag=tag)
+            req.Wait()
+            t_send_end = time.perf_counter()
+            recv_ms = (t_send_end - t_send_start) * 1000.0
+
+            # B. Receive averaged global gradient via MPI_Bcast from Master
+            t_bcast_start = time.perf_counter()
+            self.comm.Bcast(self.ps_fused_global, root=0)
+            t_bcast_end = time.perf_counter()
+            broadcast_ms = (t_bcast_end - t_bcast_start) * 1000.0
+            aggregate_ms = 0.0
+
+        ps_total_ms = recv_ms + aggregate_ms + broadcast_ms
+
+        # Unpack averaged global gradients into TensorFlow tensors
+        global_grads = [None] * len(local_grads)
+        offset = 0
+        if grad_metadata:
+            for index, shape, size, dtype in grad_metadata:
+                grad_np = self.ps_fused_global[offset:offset + size].reshape(shape)
+                global_grads[index] = tf.convert_to_tensor(grad_np, dtype=dtype)
+                offset += size
+        else:
+            for index, v in enumerate(self.model.trainable_variables):
+                size = v.shape.num_elements()
+                grad_np = self.ps_fused_global[offset:offset + size].reshape(v.shape)
+                global_grads[index] = tf.convert_to_tensor(grad_np, dtype=v.dtype)
+                offset += size
+
+        return global_grads, recv_ms, aggregate_ms, broadcast_ms, ps_total_ms
 
     def allreduce_gradients(
         self,
@@ -971,15 +1197,28 @@ class MPITrainer(BaseTrainer):
                 t_bar_end = time.perf_counter()
                 barrier_ms = (t_bar_end - t_bar_start) * 1000.0
 
-                # 4. MPI AllReduce SUM -> / global_batch_size (allreduce_ms)
+                # 4. Gradient Communication & Aggregation (Allreduce vs Master Aggregation)
+                recv_ms = 0.0
+                aggregate_ms = 0.0
+                broadcast_ms = 0.0
+                ps_total_ms = 0.0
+
                 t_comm_start = time.perf_counter()
-                global_grads = self.allreduce_gradients(
-                    local_grads,
-                    pre_packed_parts=packed_flat_grads,
-                    pre_grad_metadata=grad_metadata,
-                )
+                if self.comm_backend in ("master_aggregation", "master_agg", "ps"):
+                    global_grads, recv_ms, aggregate_ms, broadcast_ms, ps_total_ms = self.master_aggregate_gradients(
+                        local_grads,
+                        pre_packed_parts=packed_flat_grads,
+                        pre_grad_metadata=grad_metadata,
+                    )
+                    allreduce_ms = ps_total_ms
+                else:
+                    global_grads = self.allreduce_gradients(
+                        local_grads,
+                        pre_packed_parts=packed_flat_grads,
+                        pre_grad_metadata=grad_metadata,
+                    )
+                    allreduce_ms = (time.perf_counter() - t_comm_start) * 1000.0
                 t_comm_end = time.perf_counter()
-                allreduce_ms = (t_comm_end - t_comm_start) * 1000.0
 
                 # Synchronous verification check for gradients (if sync_interval)
                 if total_steps_executed % self.sync_interval == 0:
@@ -1020,6 +1259,10 @@ class MPITrainer(BaseTrainer):
                     "barrier_ms": round(barrier_ms, 2),
                     "other_ms": round(other_ms, 2),
                     "step_ms": round(step_ms, 2),
+                    "recv_ms": round(recv_ms, 2),
+                    "aggregate_ms": round(aggregate_ms, 2),
+                    "broadcast_ms": round(broadcast_ms, 2),
+                    "ps_total_ms": round(ps_total_ms, 2),
                 }
                 all_rank_timings = self.comm.gather(local_timing, root=0)
 
@@ -1041,6 +1284,10 @@ class MPITrainer(BaseTrainer):
                                     f"{t_item['barrier_ms']:.2f}",
                                     f"{t_item['other_ms']:.2f}",
                                     f"{t_item['step_ms']:.2f}",
+                                    f"{t_item.get('recv_ms', 0.0):.2f}",
+                                    f"{t_item.get('aggregate_ms', 0.0):.2f}",
+                                    f"{t_item.get('broadcast_ms', 0.0):.2f}",
+                                    f"{t_item.get('ps_total_ms', 0.0):.2f}",
                                 ])
 
                     critical_compute_ms = max(t_item["compute_ms"] for t_item in all_rank_timings)
@@ -1057,10 +1304,11 @@ class MPITrainer(BaseTrainer):
                         self.logger.info(
                             f" [STEP TIMING BREAKDOWN - EPOCH {epoch:02d} STEP {step:04d}/{self.steps_per_epoch:04d}]"
                         )
+                        comm_col = "PS_Comm(ms)" if self.comm_backend in ("master_aggregation", "master_agg", "ps") else "AllReduce(ms)"
                         self.logger.info(
                             f"   {'Rank':<5} {'Host':<9} {'Device':<6} {'Batch':<6} "
                             f"{'Data(ms)':<9} {'Compute(ms)':<12} {'Barrier(ms)':<12} "
-                            f"{'AllReduce(ms)':<14} {'Opt(ms)':<8} {'Other(ms)':<10} {'Step(ms)':<9}"
+                            f"{comm_col:<14} {'Opt(ms)':<8} {'Other(ms)':<10} {'Step(ms)':<9}"
                         )
                         self.logger.info("   " + "-" * 98)
                         for t_item in sorted(all_rank_timings, key=lambda x: x["rank"]):
@@ -1081,10 +1329,17 @@ class MPITrainer(BaseTrainer):
                             f"   >>> GPU Idle Wait (Compute Imbal.) : {gpu_idle_ms:6.2f} ms "
                             f"({(gpu_idle_ms / critical_compute_ms * 100.0) if critical_compute_ms > 0 else 0.0:4.1f}% of compute)"
                         )
-                        self.logger.info(
-                            f"   >>> Communication Ratio (AllReduce): {comm_ratio_pct:5.1f}% of total step time "
-                            f"({r0_timing['allreduce_ms']:.1f} ms / {r0_timing['step_ms']:.1f} ms)"
-                        )
+                        if self.comm_backend in ("master_aggregation", "master_agg", "ps"):
+                            self.logger.info(
+                                f"   >>> Communication Breakdown (MasterAgg): Total={r0_timing['allreduce_ms']:.1f} ms "
+                                f"[Recv={r0_timing.get('recv_ms', 0.0):.1f} ms, Agg({self.ps_agg_threads}T)={r0_timing.get('aggregate_ms', 0.0):.1f} ms, "
+                                f"Bcast={r0_timing.get('broadcast_ms', 0.0):.1f} ms] ({comm_ratio_pct:5.1f}% of step)"
+                            )
+                        else:
+                            self.logger.info(
+                                f"   >>> Communication Ratio (AllReduce): {comm_ratio_pct:5.1f}% of total step time "
+                                f"({r0_timing['allreduce_ms']:.1f} ms / {r0_timing['step_ms']:.1f} ms)"
+                            )
                         self.logger.info("=" * 102)
 
                 # Step-level runtime telemetry recording
@@ -1345,10 +1600,14 @@ class MPITrainer(BaseTrainer):
 
     def train(self):
         """Executes training loop based on configured sync_mode."""
-        if self.sync_mode == "local_steps":
-            self._train_local_steps()
-        else:
-            self._train_gradient_allreduce()
+        try:
+            if self.sync_mode == "local_steps":
+                self._train_local_steps()
+            else:
+                self._train_gradient_allreduce()
+        finally:
+            if self.agg_executor is not None:
+                self.agg_executor.shutdown(wait=False)
 
     def evaluate(self, dataset, steps: int) -> Tuple[float, float]:
         """Evaluates model performance on validation/test dataset."""

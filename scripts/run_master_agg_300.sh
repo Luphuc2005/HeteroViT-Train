@@ -11,3 +11,4 @@ MPI_CLUSTER_DIR="$(cd "$PROJECT_ROOT/mpi_cluster" && pwd)"
 CONFIG="$SCRIPT_DIR/../configs/mpi/master_agg_300.yaml"
 
 exec "$MPI_CLUSTER_DIR/run_5nodes.sh" --sync --config "$CONFIG" "$@"
+

@@ -98,8 +98,21 @@ def parse_args():
         "--sync-mode",
         type=str,
         default=None,
-        choices=["gradient_allreduce", "local_steps"],
-        help="Synchronization mode: 'gradient_allreduce' (every step) or 'local_steps' (every K steps)",
+        choices=["gradient_allreduce", "local_steps", "local_sgd", "periodic_averaging"],
+        help="Synchronization mode: 'gradient_allreduce' (every step), 'local_steps' (delta sync), or 'local_sgd' (periodic model parameter averaging)",
+    )
+    parser.add_argument(
+        "--local-sgd-h",
+        type=int,
+        default=None,
+        help="Local SGD synchronization period H (e.g. 1, 2, 4, 8 local steps between model parameter averagings)",
+    )
+    parser.add_argument(
+        "--avg-policy",
+        type=str,
+        default=None,
+        choices=["sample_weighted", "uniform"],
+        help="Model parameter averaging policy for Local SGD: 'sample_weighted' (default for hetero) or 'uniform'",
     )
     parser.add_argument(
         "--local-steps",
@@ -181,9 +194,16 @@ if args.epochs is not None:
     config["training"]["epochs"] = int(args.epochs)
 if args.sync_mode is not None:
     config["training"]["sync_mode"] = args.sync_mode
+if args.local_sgd_h is not None:
+    config["training"]["local_sgd_h"] = int(args.local_sgd_h)
+if args.avg_policy is not None:
+    config["training"]["avg_policy"] = args.avg_policy
 if args.local_steps is not None:
     ls_val = args.local_steps.strip()
     config["training"]["local_steps"] = "full_epoch" if ls_val.lower() == "full_epoch" else int(ls_val)
+    if config["training"].get("sync_mode") in ("local_sgd", "periodic_averaging") and args.local_sgd_h is None:
+        if ls_val.isdigit():
+            config["training"]["local_sgd_h"] = int(ls_val)
 if args.opt_sync is not None:
     config["training"]["optimizer_state_sync"] = args.opt_sync
 if args.global_batch is not None:
@@ -435,8 +455,15 @@ if rank == 0:
     print("-" * 80, flush=True)
     batch_detail = f"sum({rank_batch_sizes})" if rank_batch_sizes else f"local_batch={local_batch_size} * {world_size} ranks"
     sync_mode_str = training_cfg.get("sync_mode", "gradient_allreduce")
-    local_steps_str = training_cfg.get("local_steps", 10)
-    print(f"  Sync Mode         : {sync_mode_str} (local_steps K={local_steps_str})" if sync_mode_str == "local_steps" else f"  Sync Mode         : {sync_mode_str} (every step)", flush=True)
+    if sync_mode_str in ("local_sgd", "periodic_averaging"):
+        h_val = training_cfg.get("local_sgd_h", training_cfg.get("H", 1))
+        avg_pol = training_cfg.get("avg_policy", "sample_weighted")
+        print(f"  Sync Mode         : {sync_mode_str} (H={h_val}, policy={avg_pol})", flush=True)
+    elif sync_mode_str == "local_steps":
+        local_steps_str = training_cfg.get("local_steps", 10)
+        print(f"  Sync Mode         : {sync_mode_str} (local_steps K={local_steps_str})", flush=True)
+    else:
+        print(f"  Sync Mode         : {sync_mode_str} (every step)", flush=True)
     print(f"  Global Batch Size : {global_batch} ({batch_detail})", flush=True)
     print(f"  Steps per Epoch   : {steps_per_epoch} (drop_remainder={drop_remainder})", flush=True)
     print(f"  Sync Check Policy : Every {training_cfg.get('sync_interval', 20)} steps (tolerance: {sync_tolerance:.1e})", flush=True)

@@ -133,6 +133,31 @@ class MPITrainer(BaseTrainer):
         self.opt_state_sync = str(training_cfg.get("optimizer_state_sync", "preserve_local")).lower()
         self.total_train_time = 0.0
 
+        # Fixed Local SGD / Periodic Model Averaging configuration
+        local_sgd_cfg = training_cfg.get("local_sgd", {})
+        h_candidate = training_cfg.get(
+            "local_sgd_h",
+            local_sgd_cfg.get("H", training_cfg.get("H", None))
+        )
+        if h_candidate is not None:
+            self.local_sgd_h = int(h_candidate)
+        elif self.sync_mode in ("local_sgd", "periodic_averaging") and isinstance(self.local_steps, int):
+            self.local_sgd_h = self.local_steps
+        else:
+            self.local_sgd_h = 1
+
+        self.avg_policy = str(
+            training_cfg.get(
+                "avg_policy",
+                local_sgd_cfg.get("policy", "sample_weighted")
+            )
+        ).lower()
+
+        # Enforce no gradient accumulation in Local SGD mode (pure per-step updates)
+        if self.sync_mode in ("local_sgd", "periodic_averaging"):
+            self.accum_steps = 1
+            self.micro_batch_size = self.local_batch_size
+
         self.timeline_csv = None
         if self.rank == 0 and hasattr(self.logger, "run_dir"):
             self.timeline_csv = os.path.join(self.logger.run_dir, "ranks_timeline.csv")
@@ -220,6 +245,35 @@ class MPITrainer(BaseTrainer):
                         "throughput",
                         "train_loss",
                     ])
+
+        self.local_sgd_csv = None
+        if self.rank == 0 and hasattr(self.logger, "run_dir") and self.logger.run_dir and self.sync_mode in ("local_sgd", "periodic_averaging"):
+            self.local_sgd_csv = os.path.join(self.logger.run_dir, "local_sgd_timeline.csv")
+            if not os.path.exists(self.local_sgd_csv):
+                with open(self.local_sgd_csv, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    header = [
+                        "epoch",
+                        "step",
+                        "comm_round",
+                        "H",
+                        "avg_policy",
+                        "is_forced",
+                        "total_samples_since_sync",
+                    ]
+                    for r in range(self.world_size):
+                        header.append(f"rank{r}_samples")
+                    header.extend([
+                        "model_sync_ms",
+                        "communicated_bytes",
+                        "model_divergence_l2_max",
+                        "model_divergence_l2_mean",
+                        "max_weight_diff",
+                        "step_loss",
+                        "step_acc",
+                        "round_throughput",
+                    ])
+                    writer.writerow(header)
 
         # Re-initialize optimizer and loss inside strategy scope if rank 0 has MirroredStrategy
         if self.rank == 0 and self.strategy is not None:
@@ -881,6 +935,93 @@ class MPITrainer(BaseTrainer):
         sync_time = time.perf_counter() - t_sync_start
         return sync_time, max_weight_diff
 
+    def synchronize_model_weights(
+        self,
+        policy: str = "sample_weighted",
+        samples_since_sync: int = 0,
+    ) -> Tuple[float, float, float, float, int]:
+        """Synchronizes model parameters across all ranks via periodic model parameter averaging.
+
+        Averaging policies:
+          - sample_weighted (default for heterogeneous cluster):
+              W_global = sum_i(n_i * W_i) / sum_i(n_i)
+              where n_i is the number of samples processed by rank i since the last sync.
+          - uniform:
+              W_global = sum_i(W_i) / world_size
+
+        Note: Optimizer state remains strictly local to each rank (preserve_local).
+
+        Returns:
+            (sync_time_ms, max_divergence_l2, mean_divergence_l2, max_weight_diff, communicated_bytes)
+        """
+        t_sync_start = time.perf_counter()
+
+        # 1. Flatten current local model weights into 1D float32 array
+        local_weights = self.model.get_weights()
+        flat_w = np.concatenate([w.ravel() for w in local_weights]).astype(np.float32)
+        communicated_bytes = int(flat_w.nbytes)
+
+        # 2. Compute consensus weights W_global according to policy
+        self.comm.Barrier()
+        if policy == "sample_weighted":
+            n_i = float(max(0, samples_since_sync))
+            weighted_flat_w = flat_w * n_i
+            sum_weighted = np.empty_like(weighted_flat_w)
+            self.comm.Allreduce(weighted_flat_w, sum_weighted, op=MPI.SUM)
+            total_samples = float(self.comm.allreduce(n_i, op=MPI.SUM))
+            if total_samples > 0.0:
+                global_flat_w = sum_weighted / total_samples
+            else:
+                sum_w = np.empty_like(flat_w)
+                self.comm.Allreduce(flat_w, sum_w, op=MPI.SUM)
+                global_flat_w = sum_w / float(self.world_size)
+        elif policy == "uniform":
+            sum_w = np.empty_like(flat_w)
+            self.comm.Allreduce(flat_w, sum_w, op=MPI.SUM)
+            global_flat_w = sum_w / float(self.world_size)
+        else:
+            raise ValueError(f"Unknown averaging policy: '{policy}'. Supported: 'sample_weighted', 'uniform'")
+
+        # 3. Compute local model divergence (L2 drift) before replacing weights
+        local_div = float(np.linalg.norm(flat_w - global_flat_w))
+        max_divergence_l2 = float(self.comm.allreduce(local_div, op=MPI.MAX))
+        sum_div = float(self.comm.allreduce(local_div, op=MPI.SUM))
+        mean_divergence_l2 = sum_div / float(self.world_size)
+
+        # 4. Unpack global weights and update local model
+        w_global = []
+        offset = 0
+        for w in local_weights:
+            size = w.size
+            chunk = global_flat_w[offset:offset + size].reshape(w.shape).astype(w.dtype)
+            w_global.append(chunk)
+            offset += size
+        self.model.set_weights(w_global)
+
+        # 5. Verify weight consistency across all ranks
+        flat_new_w = np.concatenate([w.ravel() for w in self.model.get_weights()]).astype(np.float32)
+        max_buf = np.empty_like(flat_new_w)
+        min_buf = np.empty_like(flat_new_w)
+
+        self.comm.Barrier()
+        self.comm.Allreduce(flat_new_w, max_buf, op=MPI.MAX)
+        self.comm.Allreduce(flat_new_w, min_buf, op=MPI.MIN)
+        self.comm.Barrier()
+
+        max_weight_diff = float(np.max(np.abs(max_buf - min_buf)))
+
+        if max_weight_diff > self.sync_tolerance:
+            msg = (
+                f"[SYNC FAILED] Weight discrepancy after model averaging: "
+                f"max_diff={max_weight_diff:.8e} > tolerance={self.sync_tolerance:.1e}"
+            )
+            if self.rank == 0:
+                print(f"FAILED: {msg}", flush=True)
+            raise RuntimeError(msg)
+
+        sync_time_ms = (time.perf_counter() - t_sync_start) * 1000.0
+        return sync_time_ms, max_divergence_l2, mean_divergence_l2, max_weight_diff, communicated_bytes
+
     def _train_local_steps(self):
         """Executes Local-Step Synchronization training loop (Phase 1 Baseline)."""
         import math
@@ -1112,6 +1253,240 @@ class MPITrainer(BaseTrainer):
             self.logger.info(
                 f"MPI Training finished successfully in {self.total_train_time:.2f}s "
                 f"({self.total_train_time / 60:.2f} minutes)."
+            )
+
+    def _train_local_sgd(self):
+        """Executes Fixed Local SGD / Periodic Model Parameter Averaging training loop.
+
+        Guarantees:
+          - Each rank computes forward/backward and updates optimizer locally at every step.
+          - NO gradient AllReduce across ranks during local steps.
+          - NO gradient accumulation (pure per-step updates).
+          - Model parameter averaging triggered every H steps (or forced at epoch end / max_steps).
+          - Optimizer state remains strictly local (preserve_local).
+          - Logs: H, communication_rounds, samples_since_sync, model_sync_ms, communicated_bytes,
+                  model_divergence_l2, throughput, accuracy.
+        """
+        H = self.local_sgd_h
+        policy = self.avg_policy
+
+        if self.rank == 0:
+            self.logger.info("=" * 88)
+            self.logger.info(" HETEROVIT-MPI: FIXED LOCAL SGD / PERIODIC MODEL AVERAGING")
+            self.logger.info("=" * 88)
+            self.logger.info(f"  Sync Mode            : local_sgd")
+            self.logger.info(f"  Synchronization H    : {H} local steps between model averagings")
+            self.logger.info(f"  Averaging Policy     : {policy}")
+            self.logger.info(f"  Steps per Epoch      : {self.steps_per_epoch}")
+            self.logger.info(f"  Total Epochs         : {self.epochs}")
+            self.logger.info(f"  Local Batch Sizes    : {self.rank_batch_sizes} (Global Batch: {self.global_batch_size})")
+            self.logger.info(f"  Optimizer Policy     : preserve_local (local momentum/variance preserved)")
+            self.logger.info(f"  Sync Tolerance       : {self.sync_tolerance:.1e}")
+            if self.max_steps is not None:
+                self.logger.info(f"  Smoke Test Mode      : max_steps={self.max_steps}")
+            self.logger.info("=" * 88)
+
+        total_steps_executed = (self.start_epoch - 1) * self.steps_per_epoch if self.start_epoch > 1 else 0
+        total_comm_rounds = 0
+        train_start_time = time.perf_counter()
+
+        for epoch in range(self.start_epoch, self.epochs + 1):
+            epoch_start_time = time.perf_counter()
+            total_train_loss = 0.0
+            total_train_acc = 0.0
+            step_count = 0
+
+            steps_since_sync = 0
+            samples_since_sync = 0
+            t_last_sync = time.perf_counter()
+
+            train_iter = iter(self.dist_train_ds) if (self.dist_train_ds is not None and self.local_batch_size > 0) else None
+
+            for step in range(1, self.steps_per_epoch + 1):
+                t_step_start = time.perf_counter()
+                total_steps_executed += 1
+
+                # 1. Fetch batch
+                if self.local_batch_size > 0 and train_iter is not None:
+                    try:
+                        images, labels = next(train_iter)
+                    except StopIteration:
+                        train_iter = iter(self.dist_train_ds)
+                        images, labels = next(train_iter)
+                else:
+                    images, labels = None, None
+
+                # 2. Local Train Step (Forward, Backward, Optimizer Update - STRICTLY LOCAL)
+                # NO gradient AllReduce across ranks. NO gradient accumulation.
+                if self.local_batch_size > 0 and images is not None:
+                    loss, acc = self._local_train_step(images, labels)
+                    loss_val = float(loss)
+                    acc_val = float(acc)
+                else:
+                    loss_val = 0.0
+                    acc_val = 0.0
+
+                step_time = time.perf_counter() - t_step_start
+                total_train_loss += loss_val
+                total_train_acc += acc_val
+                step_count += 1
+                steps_since_sync += 1
+                samples_since_sync += self.local_batch_size
+
+                # 3. Determine if model synchronization is triggered
+                is_epoch_end = (step == self.steps_per_epoch)
+                is_max_steps = (self.max_steps is not None and total_steps_executed >= self.max_steps)
+                need_sync = (steps_since_sync >= H) or (is_epoch_end and steps_since_sync > 0) or (is_max_steps and steps_since_sync > 0)
+
+                if need_sync:
+                    total_comm_rounds += 1
+                    is_forced = (steps_since_sync < H)
+
+                    # Gather per-rank samples since sync for reporting
+                    rank_samples = self.comm.gather(samples_since_sync, root=0)
+
+                    # Execute model parameter averaging
+                    sync_ms, max_div_l2, mean_div_l2, max_diff, comm_bytes = self.synchronize_model_weights(
+                        policy=policy,
+                        samples_since_sync=samples_since_sync,
+                    )
+
+                    round_duration = time.perf_counter() - t_last_sync
+                    total_samples_since_sync = sum(rank_samples) if rank_samples else (samples_since_sync * self.world_size)
+                    round_tput = total_samples_since_sync / max(round_duration, 1e-6)
+
+                    # Console logging on rank 0
+                    if self.rank == 0:
+                        tag = "[LOCAL SGD FORCED SYNC]" if is_forced else "[LOCAL SGD SYNC]"
+                        self.logger.info(
+                            f"  {tag} Round {total_comm_rounds:03d} (Ep {epoch:02d}, Step {step:03d}/{self.steps_per_epoch:03d}) | "
+                            f"H={H} (steps={steps_since_sync}) | Samples: {total_samples_since_sync} | "
+                            f"Sync: {sync_ms:6.1f}ms | Comm: {comm_bytes/(1024*1024):5.2f}MB | "
+                            f"Div L2: {max_div_l2:.4e} (mean: {mean_div_l2:.4e}) | "
+                            f"Weight Diff: {max_diff:.1e} | Tput: {round_tput:5.1f} img/s"
+                        )
+
+                        # Write to local_sgd_timeline.csv
+                        if self.local_sgd_csv:
+                            with open(self.local_sgd_csv, "a", newline="", encoding="utf-8") as f:
+                                writer = csv.writer(f)
+                                row = [
+                                    epoch,
+                                    step,
+                                    total_comm_rounds,
+                                    H,
+                                    policy,
+                                    int(is_forced),
+                                    total_samples_since_sync,
+                                ]
+                                for r in range(self.world_size):
+                                    row.append(rank_samples[r] if rank_samples and r < len(rank_samples) else 0)
+                                row.extend([
+                                    f"{sync_ms:.2f}",
+                                    comm_bytes,
+                                    f"{max_div_l2:.6e}",
+                                    f"{mean_div_l2:.6e}",
+                                    f"{max_diff:.6e}",
+                                    f"{loss_val:.4f}",
+                                    f"{acc_val:.4f}",
+                                    f"{round_tput:.2f}",
+                                ])
+                                writer.writerow(row)
+
+                    # Reset counters for next local window
+                    steps_since_sync = 0
+                    samples_since_sync = 0
+                    t_last_sync = time.perf_counter()
+
+                # 4. Periodic step logging on rank 0
+                is_smoke = self.max_steps is not None and self.max_steps <= 50
+                if self.rank == 0 and (step % self.log_interval == 0 or step == self.steps_per_epoch or is_smoke):
+                    avg_step_loss = total_train_loss / max(step_count, 1)
+                    avg_step_acc = total_train_acc / max(step_count, 1)
+                    step_tput = self.global_batch_size / max(step_time, 1e-6)
+                    pct = (step / self.steps_per_epoch) * 100.0
+
+                    try:
+                        curr_lr = float(self.optimizer.learning_rate.numpy())
+                    except Exception:
+                        try:
+                            curr_lr = float(self.optimizer.learning_rate)
+                        except Exception:
+                            curr_lr = 1e-3
+
+                    self.logger.info(
+                        f"Epoch [{epoch:02d}/{self.epochs:02d}] "
+                        f"[{step:03d}/{self.steps_per_epoch:03d} ({pct:5.1f}%)] | "
+                        f"Loss: {loss_val:.4f} (avg: {avg_step_loss:.4f}) | "
+                        f"Acc: {acc_val*100:5.2f}% (avg: {avg_step_acc*100:5.2f}%) | "
+                        f"Step: {step_time*1000:6.1f}ms | "
+                        f"Tput: {step_tput:5.1f} img/s | "
+                        f"Comm Rounds: {total_comm_rounds} | LR: {curr_lr:.2e}"
+                    )
+
+                if is_max_steps:
+                    if self.rank == 0:
+                        self.logger.info(f"Reached max_steps={self.max_steps}. Stopping training loop.")
+                    break
+
+            # End of epoch calculations
+            train_time = time.perf_counter() - epoch_start_time
+            avg_train_loss = total_train_loss / max(step_count, 1)
+            avg_train_acc = total_train_acc / max(step_count, 1)
+            total_samples = step_count * self.global_batch_size
+            train_tput = total_samples / max(train_time, 1e-6)
+
+            # 5. Validation phase (Weights are guaranteed synchronized!)
+            val_steps_to_run = min(2, self.val_steps) if (self.max_steps is not None and self.max_steps <= 50) else self.val_steps
+            val_start_time = time.perf_counter()
+            val_loss, val_acc = self.evaluate(self.dist_val_ds, val_steps_to_run)
+            val_time = time.perf_counter() - val_start_time
+            total_epoch_time = train_time + val_time
+
+            if self.rank == 0:
+                is_best = val_acc > self.best_val_accuracy
+                if is_best:
+                    self.best_val_accuracy = val_acc
+                    self.save_checkpoint("best.weights.h5")
+                self.save_checkpoint("last.weights.h5")
+
+                try:
+                    curr_lr = float(self.optimizer.learning_rate.numpy())
+                except Exception:
+                    try:
+                        curr_lr = float(self.optimizer.learning_rate)
+                    except Exception:
+                        curr_lr = 1e-3
+
+                self.logger.log_epoch(
+                    epoch=epoch,
+                    train_loss=avg_train_loss,
+                    train_accuracy=avg_train_acc,
+                    val_loss=val_loss,
+                    val_accuracy=val_acc,
+                    epoch_time=total_epoch_time,
+                    samples_per_sec=train_tput,
+                    train_time=train_time,
+                    val_time=val_time,
+                    learning_rate=curr_lr,
+                    total_epochs=self.epochs,
+                    is_best=is_best,
+                    best_val_acc=self.best_val_accuracy,
+                    cluster_info=f"local_sgd (H={H}, {policy}) | {self.global_batch_size} (comm_rounds={total_comm_rounds})",
+                )
+
+            import gc
+            gc.collect()
+            self.comm.Barrier()
+
+            if self.max_steps is not None and total_steps_executed >= self.max_steps:
+                break
+
+        self.total_train_time = time.perf_counter() - train_start_time
+        if self.rank == 0:
+            self.logger.info(
+                f"MPI Local SGD Training finished in {self.total_train_time:.2f}s "
+                f"({self.total_train_time / 60:.2f} mins). Total Comm Rounds: {total_comm_rounds}."
             )
 
     def _train_gradient_allreduce(self):
@@ -1601,7 +1976,9 @@ class MPITrainer(BaseTrainer):
     def train(self):
         """Executes training loop based on configured sync_mode."""
         try:
-            if self.sync_mode == "local_steps":
+            if self.sync_mode in ("local_sgd", "periodic_averaging"):
+                self._train_local_sgd()
+            elif self.sync_mode == "local_steps":
                 self._train_local_steps()
             else:
                 self._train_gradient_allreduce()

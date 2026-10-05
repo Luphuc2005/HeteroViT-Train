@@ -275,6 +275,28 @@ class MPITrainer(BaseTrainer):
                     ])
                     writer.writerow(header)
 
+        self.resources_csv = None
+        if self.rank == 0 and hasattr(self.logger, "run_dir") and self.logger.run_dir:
+            self.resources_csv = os.path.join(self.logger.run_dir, "cluster_resources.csv")
+            if not os.path.exists(self.resources_csv):
+                with open(self.resources_csv, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "epoch",
+                        "rank",
+                        "host",
+                        "device",
+                        "cpu_util_pct",
+                        "proc_ram_mb",
+                        "sys_ram_used_mb",
+                        "sys_ram_total_mb",
+                        "sys_ram_pct",
+                        "gpu0_vram_used_mb",
+                        "gpu0_vram_total_mb",
+                        "gpu1_vram_used_mb",
+                        "gpu1_vram_total_mb",
+                    ])
+
         # Re-initialize optimizer and loss inside strategy scope if rank 0 has MirroredStrategy
         if self.rank == 0 and self.strategy is not None:
             with self.strategy.scope():
@@ -855,6 +877,99 @@ class MPITrainer(BaseTrainer):
             raise RuntimeError(msg)
 
         return max_diff
+
+    def get_resource_metrics(self) -> Dict[str, Any]:
+        """Collects local process and system CPU, RAM, and GPU VRAM utilization."""
+        import psutil
+        proc = psutil.Process()
+        sys_mem = psutil.virtual_memory()
+
+        metrics = {
+            "rank": self.rank,
+            "host": self.hostname,
+            "device": self.device_str,
+            "cpu_util_pct": float(psutil.cpu_percent(interval=None)),
+            "proc_ram_mb": round(proc.memory_info().rss / (1024 * 1024), 1),
+            "sys_ram_used_mb": round(sys_mem.used / (1024 * 1024), 1),
+            "sys_ram_total_mb": round(sys_mem.total / (1024 * 1024), 1),
+            "sys_ram_pct": float(sys_mem.percent),
+            "gpu_vram": [],
+        }
+
+        if self.rank == 0 and self.num_gpus > 0:
+            try:
+                import subprocess
+                out = subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=index,memory.used,memory.total,utilization.gpu", "--format=csv,noheader,nounits"],
+                    timeout=1
+                ).decode().strip()
+                for line in out.splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 4:
+                        metrics["gpu_vram"].append({
+                            "idx": int(parts[0]),
+                            "used_mb": float(parts[1]),
+                            "total_mb": float(parts[2]),
+                            "gpu_util": float(parts[3]) if parts[3] != "[N/A]" else 0.0,
+                        })
+            except Exception:
+                pass
+
+        return metrics
+
+    def log_cluster_resources(self, epoch: int):
+        """Gathers and logs CPU, RAM, and GPU VRAM resource utilization across all cluster nodes."""
+        node_res = self.get_resource_metrics()
+        all_res = self.comm.gather(node_res, root=0)
+
+        if self.rank == 0 and all_res:
+            self.logger.info("=" * 96)
+            self.logger.info(f" [CLUSTER HARDWARE RESOURCE UTILIZATION - EPOCH {epoch:02d}]")
+            self.logger.info(f"  {'Rank':<5} {'Host':<10} {'Device':<6} {'CPU%':<7} {'Proc RAM':<12} {'System RAM (Used / Total)':<28} {'GPU VRAM':<22}")
+            self.logger.info("  " + "-" * 92)
+
+            for r_res in sorted(all_res, key=lambda x: x["rank"]):
+                r = r_res["rank"]
+                h = r_res["host"]
+                dev = r_res["device"]
+                cpu_p = f"{r_res['cpu_util_pct']:5.1f}%"
+                proc_ram = f"{r_res['proc_ram_mb']:6.1f} MB"
+                sys_used_gb = r_res['sys_ram_used_mb'] / 1024.0
+                sys_tot_gb = r_res['sys_ram_total_mb'] / 1024.0
+                sys_ram = f"{sys_used_gb:4.1f}G / {sys_tot_gb:4.1f}G ({r_res['sys_ram_pct']:4.1f}%)"
+
+                gpu_str = "N/A"
+                if r_res["gpu_vram"]:
+                    gpu_parts = [f"GPU{g['idx']}:{int(g['used_mb'])}M/{int(g['total_mb'])}M" for g in r_res["gpu_vram"]]
+                    gpu_str = " | ".join(gpu_parts)
+
+                self.logger.info(f"  {r:<5} {h:<10} {dev:<6} {cpu_p:<7} {proc_ram:<12} {sys_ram:<28} {gpu_str:<22}")
+            self.logger.info("=" * 96)
+
+            # Write to cluster_resources.csv
+            if self.resources_csv:
+                with open(self.resources_csv, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    for r_res in sorted(all_res, key=lambda x: x["rank"]):
+                        g0_used = r_res["gpu_vram"][0]["used_mb"] if len(r_res["gpu_vram"]) > 0 else ""
+                        g0_tot = r_res["gpu_vram"][0]["total_mb"] if len(r_res["gpu_vram"]) > 0 else ""
+                        g1_used = r_res["gpu_vram"][1]["used_mb"] if len(r_res["gpu_vram"]) > 1 else ""
+                        g1_tot = r_res["gpu_vram"][1]["total_mb"] if len(r_res["gpu_vram"]) > 1 else ""
+                        writer.writerow([
+                            epoch,
+                            r_res["rank"],
+                            r_res["host"],
+                            r_res["device"],
+                            r_res["cpu_util_pct"],
+                            r_res["proc_ram_mb"],
+                            r_res["sys_ram_used_mb"],
+                            r_res["sys_ram_total_mb"],
+                            r_res["sys_ram_pct"],
+                            g0_used,
+                            g0_tot,
+                            g1_used,
+                            g1_tot,
+                        ])
 
     def synchronize_model_delta(self, w_start: List[np.ndarray]) -> Tuple[float, float]:
         """Synchronizes model weights across all ranks using Delta representation (Phase 1 Baseline).
@@ -1475,6 +1590,9 @@ class MPITrainer(BaseTrainer):
                     cluster_info=f"local_sgd (H={H}, {policy}) | {self.global_batch_size} (comm_rounds={total_comm_rounds})",
                 )
 
+            # Log CPU, RAM, and GPU VRAM utilization across all cluster nodes
+            self.log_cluster_resources(epoch)
+
             import gc
             gc.collect()
             self.comm.Barrier()
@@ -1956,6 +2074,9 @@ class MPITrainer(BaseTrainer):
                                 f"   >>> Successfully re-batched cluster! New rank batches: {self.rank_batch_sizes} "
                                 f"(Global: {self.global_batch_size}, Steps/epoch: {self.steps_per_epoch})"
                             )
+
+            # Log CPU, RAM, and GPU VRAM utilization across all cluster nodes
+            self.log_cluster_resources(epoch)
 
             # Force garbage collection across all ranks (vital for 4GB node iciplab03)
             import gc

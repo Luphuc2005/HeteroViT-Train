@@ -95,6 +95,12 @@ def parse_args():
         help="Starting epoch number when resuming. Auto-detected from train.csv if omitted.",
     )
     parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Experiment name override (e.g. local_sgd_h04_300)",
+    )
+    parser.add_argument(
         "--sync-mode",
         type=str,
         default=None,
@@ -192,6 +198,10 @@ if "training" not in config:
 
 if args.epochs is not None:
     config["training"]["epochs"] = int(args.epochs)
+if args.name is not None:
+    if "experiment" not in config:
+        config["experiment"] = {}
+    config["experiment"]["name"] = args.name
 if args.sync_mode is not None:
     config["training"]["sync_mode"] = args.sync_mode
 if args.local_sgd_h is not None:

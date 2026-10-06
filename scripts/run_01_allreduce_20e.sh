@@ -24,3 +24,4 @@ echo "==========================================================================
   --config "$CONFIG" \
   --name "allreduce_baseline_300_20e" \
   --epochs "$EPOCHS" "${@:2}" 2>&1 | tee "$LOG_FILE"
+

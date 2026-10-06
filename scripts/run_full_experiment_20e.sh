@@ -51,3 +51,4 @@ echo "==========================================================================
 
 # Print aggregated summary
 python3 "$SCRIPT_DIR/aggregate_benchmark_results.py" || true
+

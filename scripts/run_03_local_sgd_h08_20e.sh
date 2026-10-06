@@ -26,3 +26,4 @@ echo "==========================================================================
   --local-sgd-h 8 \
   --avg-policy "sample_weighted" \
   --epochs "$EPOCHS" "${@:2}" 2>&1 | tee "$LOG_FILE"
+

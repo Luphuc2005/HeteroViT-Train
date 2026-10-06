@@ -97,7 +97,21 @@ def parse_run_dir(run_path: str) -> Dict[str, Any]:
     return info
 
 def main():
-    runs = sorted(glob.glob(os.path.join(RESULTS_DIR, "*")), key=os.path.getmtime)
+    import argparse
+    parser = argparse.ArgumentParser(description="Aggregate HeteroViT-MPI Benchmark Results")
+    parser.add_argument("--all", action="store_true", help="Include archived verification runs")
+    args = parser.parse_args()
+
+    candidate_dirs = [RESULTS_DIR]
+    if args.all:
+        candidate_dirs.append(os.path.join(RESULTS_DIR, "archive", "audit_verification_1epoch"))
+
+    runs = []
+    for d in candidate_dirs:
+        if os.path.exists(d):
+            runs.extend(glob.glob(os.path.join(d, "*")))
+    runs = sorted(runs, key=os.path.getmtime)
+
     data = []
     for r in runs:
         if os.path.isdir(r) and (os.path.exists(os.path.join(r, "run.log")) or os.path.exists(os.path.join(r, "train.csv"))):
@@ -112,10 +126,10 @@ def main():
     print("=" * 110)
     print(f"{'Experiment Name':<35} {'Mode/H':<15} {'Epochs':<8} {'Wall-Clock':<12} {'Tput (img/s)':<14} {'Best Val%':<10} {'Test%':<8} {'Comm Rounds':<12}")
     print("-" * 110)
-    for d in data[-10:]:
+    for d in data:
         mode_str = f"H={d['H']}" if "local_sgd" in d['mode'] else "AllReduce"
         m, s = divmod(int(d["wall_clock_s"]), 60)
-        time_str = f"{m}m {s}s" if d["wall_clock_s"] > 0 else "N/A"
+        time_str = f"{m}m {s}s" if d["wall_clock_s"] > 0 else "In Progress"
         print(f"{d['name']:<35} {mode_str:<15} {d['epochs']:<8} {time_str:<12} {d['tput']:<14.1f} {d['best_val_acc']:<10.2f} {d['test_acc']:<8.2f} {d['comm_rounds']:<12}")
     print("=" * 110)
 

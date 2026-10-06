@@ -53,6 +53,7 @@ checkpoints/**
 *.pth
 *.ckpt
 !results/**/.gitkeep
+!results/README.md
 !profiles/*.csv
 
 # IDE and OS

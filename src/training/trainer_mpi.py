@@ -72,6 +72,7 @@ class MPITrainer(BaseTrainer):
 
         self.sync_interval = int(training_cfg.get("sync_interval", 20))
         self.sync_tolerance = float(training_cfg.get("sync_tolerance", 1e-5))
+        self.verify_sync_every_round = bool(training_cfg.get("verify_sync_every_round", False))
 
         # Gradient accumulation configuration (e.g. for GPU rank with large batch)
         grad_accum_cfg = training_cfg.get("grad_accum", {})
@@ -1054,6 +1055,7 @@ class MPITrainer(BaseTrainer):
         self,
         policy: str = "sample_weighted",
         samples_since_sync: int = 0,
+        verify_weights: bool = False,
     ) -> Tuple[float, float, float, float, int]:
         """Synchronizes model parameters across all ranks via periodic model parameter averaging.
 
@@ -1066,6 +1068,11 @@ class MPITrainer(BaseTrainer):
 
         Note: Optimizer state remains strictly local to each rank (preserve_local).
 
+        Args:
+            policy: Averaging policy ('sample_weighted' or 'uniform')
+            samples_since_sync: Local samples processed since last sync
+            verify_weights: If True, executes full verification across all ranks via MPI_MAX/MIN.
+
         Returns:
             (sync_time_ms, max_divergence_l2, mean_divergence_l2, max_weight_diff, communicated_bytes)
         """
@@ -1076,8 +1083,7 @@ class MPITrainer(BaseTrainer):
         flat_w = np.concatenate([w.ravel() for w in local_weights]).astype(np.float32)
         communicated_bytes = int(flat_w.nbytes)
 
-        # 2. Compute consensus weights W_global according to policy
-        self.comm.Barrier()
+        # 2. Compute consensus weights W_global according to policy (single blocking Allreduce)
         if policy == "sample_weighted":
             n_i = float(max(0, samples_since_sync))
             weighted_flat_w = flat_w * n_i
@@ -1113,26 +1119,27 @@ class MPITrainer(BaseTrainer):
             offset += size
         self.model.set_weights(w_global)
 
-        # 5. Verify weight consistency across all ranks
-        flat_new_w = np.concatenate([w.ravel() for w in self.model.get_weights()]).astype(np.float32)
-        max_buf = np.empty_like(flat_new_w)
-        min_buf = np.empty_like(flat_new_w)
+        # 5. Verify weight consistency across all ranks (only when explicitly requested)
+        if verify_weights:
+            flat_new_w = np.concatenate([w.ravel() for w in self.model.get_weights()]).astype(np.float32)
+            max_buf = np.empty_like(flat_new_w)
+            min_buf = np.empty_like(flat_new_w)
 
-        self.comm.Barrier()
-        self.comm.Allreduce(flat_new_w, max_buf, op=MPI.MAX)
-        self.comm.Allreduce(flat_new_w, min_buf, op=MPI.MIN)
-        self.comm.Barrier()
+            self.comm.Allreduce(flat_new_w, max_buf, op=MPI.MAX)
+            self.comm.Allreduce(flat_new_w, min_buf, op=MPI.MIN)
 
-        max_weight_diff = float(np.max(np.abs(max_buf - min_buf)))
+            max_weight_diff = float(np.max(np.abs(max_buf - min_buf)))
 
-        if max_weight_diff > self.sync_tolerance:
-            msg = (
-                f"[SYNC FAILED] Weight discrepancy after model averaging: "
-                f"max_diff={max_weight_diff:.8e} > tolerance={self.sync_tolerance:.1e}"
-            )
-            if self.rank == 0:
-                print(f"FAILED: {msg}", flush=True)
-            raise RuntimeError(msg)
+            if max_weight_diff > self.sync_tolerance:
+                msg = (
+                    f"[SYNC FAILED] Weight discrepancy after model averaging: "
+                    f"max_diff={max_weight_diff:.8e} > tolerance={self.sync_tolerance:.1e}"
+                )
+                if self.rank == 0:
+                    print(f"FAILED: {msg}", flush=True)
+                raise RuntimeError(msg)
+        else:
+            max_weight_diff = 0.0
 
         sync_time_ms = (time.perf_counter() - t_sync_start) * 1000.0
         return sync_time_ms, max_divergence_l2, mean_divergence_l2, max_weight_diff, communicated_bytes
@@ -1461,9 +1468,11 @@ class MPITrainer(BaseTrainer):
                     rank_samples = self.comm.gather(samples_since_sync, root=0)
 
                     # Execute model parameter averaging
+                    do_verify = self.verify_sync_every_round or (total_comm_rounds == 1) or is_epoch_end or (total_comm_rounds % self.sync_interval == 0)
                     sync_ms, max_div_l2, mean_div_l2, max_diff, comm_bytes = self.synchronize_model_weights(
                         policy=policy,
                         samples_since_sync=samples_since_sync,
+                        verify_weights=do_verify,
                     )
 
                     round_duration = time.perf_counter() - t_last_sync

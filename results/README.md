@@ -39,3 +39,4 @@ Historical and exploratory experimental data are categorized into:
 - [`phase0_single_node/`](file:///home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/archive/phase0_single_node/): Single-machine CPU core scaling, GPU benchmarks, and joint GPU+CPU training.
 - [`early_smoke_runs/`](file:///home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/archive/early_smoke_runs/): Preliminary smoke tests and setup verifications.
 - [`legacy_logs/`](file:///home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/archive/legacy_logs/): Historical nohup run logs.
+

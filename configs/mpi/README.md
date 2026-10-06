@@ -54,3 +54,4 @@ Legacy and diagnostic configurations from earlier development phases:
 - `local_steps_k*_5nodes.yaml`: Early fixed-interval weight sync probes
 - `val_c*_*.yaml`: Validation cluster scaling experiments
 - `baseline_5nodes.yaml`, `hetero_static_5nodes.yaml`: Static batch configurations
+

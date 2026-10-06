@@ -14,7 +14,9 @@ This directory contains the production YAML configuration files used for distrib
 | Config File | Synchronization Mode | Communication Primitive | Comm Frequency | Use Case |
 | :--- | :--- | :--- | :--- | :--- |
 | [`auto_zero_idle_300.yaml`](file:///home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/configs/mpi/auto_zero_idle_300.yaml) | Synchronous SGD (`gradient_allreduce`) | `MPI.Allreduce(SUM)` | Every step ($H=1$) | Clean Synchronous AllReduce Baseline |
-| [`local_sgd_300.yaml`](file:///home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/configs/mpi/local_sgd_300.yaml) | Local SGD (`local_sgd`) | `MPI.Allreduce(SUM)` | Every $H$ steps ($H \in \{4, 8, 16\}$) | Communication-efficient Local SGD |
+| [`local_sgd_300.yaml`](file:///home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/configs/mpi/local_sgd_300.yaml) | Local SGD (`local_sgd`) | `MPI.Allreduce(SUM)` | Configurable $H$ | General Local SGD template |
+| [`local_sgd_h24_300.yaml`](file:///home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/configs/mpi/local_sgd_h24_300.yaml) | Local SGD (`local_sgd`) | `MPI.Allreduce(SUM)` | Every 24 steps ($H=24$) | High-sparsity Local SGD ($H=24$) |
+| [`local_sgd_h32_300.yaml`](file:///home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/configs/mpi/local_sgd_h32_300.yaml) | Local SGD (`local_sgd`) | `MPI.Allreduce(SUM)` | Every 32 steps ($H=32$) | High-sparsity Local SGD ($H=32$) |
 | [`master_agg_300.yaml`](file:///home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/configs/mpi/master_agg_300.yaml) | Master Aggregation (`master_aggregation`) | Point-to-point `Gather / Bcast` | Every step ($H=1$) | Parameter Server / Master Topology |
 
 ---

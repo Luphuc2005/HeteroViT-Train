@@ -73,6 +73,8 @@ class MPITrainer(BaseTrainer):
         self.sync_interval = int(training_cfg.get("sync_interval", 20))
         self.sync_tolerance = float(training_cfg.get("sync_tolerance", 1e-5))
         self.verify_sync_every_round = bool(training_cfg.get("verify_sync_every_round", False))
+        self.debug_sync = bool(training_cfg.get("debug", False) or training_cfg.get("debug_sync_verification", False))
+        self.verify_at_epoch_end = bool(training_cfg.get("verify_at_epoch_end", False))
 
         # Gradient accumulation configuration (e.g. for GPU rank with large batch)
         grad_accum_cfg = training_cfg.get("grad_accum", {})
@@ -1468,7 +1470,7 @@ class MPITrainer(BaseTrainer):
                     rank_samples = self.comm.gather(samples_since_sync, root=0)
 
                     # Execute model parameter averaging
-                    do_verify = self.verify_sync_every_round or (total_comm_rounds == 1) or is_epoch_end or (total_comm_rounds % self.sync_interval == 0)
+                    do_verify = self.verify_sync_every_round or self.debug_sync or (is_epoch_end and self.verify_at_epoch_end)
                     sync_ms, max_div_l2, mean_div_l2, max_diff, comm_bytes = self.synchronize_model_weights(
                         policy=policy,
                         samples_since_sync=samples_since_sync,
@@ -1722,8 +1724,8 @@ class MPITrainer(BaseTrainer):
                     allreduce_ms = (time.perf_counter() - t_comm_start) * 1000.0
                 t_comm_end = time.perf_counter()
 
-                # Synchronous verification check for gradients (if sync_interval)
-                if total_steps_executed % self.sync_interval == 0:
+                # Synchronous verification check for gradients (only if debug_sync is True)
+                if self.debug_sync and total_steps_executed % self.sync_interval == 0:
                     self.verify_gradients(global_grads, step=total_steps_executed)
 
                 # 5. Apply globally-averaged gradients (optimizer_ms)
@@ -1735,8 +1737,8 @@ class MPITrainer(BaseTrainer):
                 t_opt_end = time.perf_counter()
                 optimizer_ms = (t_opt_end - t_opt_start) * 1000.0
 
-                # Synchronous verification check for weights (if sync_interval)
-                if total_steps_executed % self.sync_interval == 0:
+                # Synchronous verification check for weights (only if debug_sync is True)
+                if self.debug_sync and total_steps_executed % self.sync_interval == 0:
                     self.verify_model_weights(step=total_steps_executed)
 
                 # 6. Step wall time & other_ms
@@ -2117,8 +2119,18 @@ class MPITrainer(BaseTrainer):
                 self.agg_executor.shutdown(wait=False)
 
     def evaluate(self, dataset, steps: int) -> Tuple[float, float]:
-        """Evaluates model performance on validation/test dataset."""
-        if self.rank == 0 and self.strategy is not None:
+        """Evaluates model performance on validation/test dataset.
+
+        To prevent CPU straggler bottleneck (~75s wait per epoch), only Rank 0 (2x Titan Z GPU)
+        evaluates the complete validation dataset (5,000 images). CPU worker ranks skip immediately.
+        """
+        if self.rank != 0:
+            return 0.0, 0.0
+
+        if dataset is None:
+            return 0.0, 0.0
+
+        if self.strategy is not None:
             global_batch = int(self.local_batch_size)
 
             def val_step_fn(images, labels):
@@ -2157,7 +2169,7 @@ class MPITrainer(BaseTrainer):
             num_batches = 0
 
             @tf.function
-            def cpu_val_step(images, labels):
+            def local_val_step(images, labels):
                 predictions = self.model(images, training=False)
                 loss = self.loss_fn(labels, predictions)
                 pred_labels = tf.argmax(predictions, axis=-1, output_type=labels.dtype)
@@ -2165,7 +2177,7 @@ class MPITrainer(BaseTrainer):
                 return loss, accuracy
 
             for images, labels in dataset:
-                loss, acc = cpu_val_step(images, labels)
+                loss, acc = local_val_step(images, labels)
                 total_loss += float(loss)
                 total_acc += float(acc)
                 num_batches += 1

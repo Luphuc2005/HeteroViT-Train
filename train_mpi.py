@@ -563,6 +563,11 @@ trainer.train()
 
 # Final evaluation (only if not a short smoke test)
 if args.max_steps is None:
+    best_ckpt_path = os.path.join(trainer.logger.checkpoints_dir, "best.weights.h5")
+    if os.path.exists(best_ckpt_path):
+        if rank == 0:
+            logger.info(f"Loading best validation checkpoint for test evaluation: {best_ckpt_path}")
+        trainer.model.load_weights(best_ckpt_path)
     if rank == 0:
         logger.info("Executing final evaluation on test set...")
     test_loss, test_acc = trainer.evaluate(test_ds, steps=int(10000 / local_batch_size) + 1)

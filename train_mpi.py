@@ -182,6 +182,12 @@ def parse_args():
         default=None,
         help="Number of worker threads on rank 0 for parallel gradient chunk aggregation (e.g. 1, 4, 8, 12, 18)",
     )
+        parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed override",
+    )
     return parser.parse_args()
 
 
@@ -236,6 +242,9 @@ if args.cooldown_epochs is not None:
     config["dynamic_scheduler"]["cooldown_epochs"] = int(args.cooldown_epochs)
 if args.ema_alpha is not None:
     config["dynamic_scheduler"]["ema_alpha"] = float(args.ema_alpha)
+
+if args.seed is not None:
+    config["seed"] = int(args.seed)
 
 seed = int(config.get("seed", 42))
 set_seed(seed)

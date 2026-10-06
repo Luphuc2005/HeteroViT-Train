@@ -182,7 +182,7 @@ def parse_args():
         default=None,
         help="Number of worker threads on rank 0 for parallel gradient chunk aggregation (e.g. 1, 4, 8, 12, 18)",
     )
-        parser.add_argument(
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,

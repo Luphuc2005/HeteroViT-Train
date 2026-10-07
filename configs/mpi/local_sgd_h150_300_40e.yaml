@@ -1,5 +1,5 @@
 experiment:
-  name: local_sgd_h20_40e_300
+  name: local_sgd_h150_40e_300
 
 mode: mpi
 seed: 42
@@ -24,7 +24,7 @@ training:
   global_batch_size: 300
   auto_balance: true
   sync_mode: local_sgd
-  local_sgd_h: 20
+  local_sgd_h: 150
   avg_policy: sample_weighted
   optimizer_state_sync: preserve_local
   grad_accum:
@@ -49,4 +49,3 @@ gpu:
 logging:
   log_interval: 10
   output_dir: /home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results
-

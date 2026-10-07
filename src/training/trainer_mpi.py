@@ -1491,6 +1491,19 @@ class MPITrainer(BaseTrainer):
                             f"Div L2: {max_div_l2:.4e} (mean: {mean_div_l2:.4e}) | "
                             f"Weight Diff: {max_diff:.1e} | Tput: {round_tput:5.1f} img/s"
                         )
+                        if rank_samples and total_samples_since_sync > 0:
+                            sample_counts_str = ", ".join(f"Lab0{i+1}:{s}" for i, s in enumerate(rank_samples))
+                            data_pct_str = ", ".join(f"Lab0{i+1}:{s/total_samples_since_sync*100:.2f}%" for i, s in enumerate(rank_samples))
+                            if policy == "sample_weighted":
+                                weight_pct_str = data_pct_str
+                            else:
+                                weight_pct_str = ", ".join(f"Lab0{i+1}:{100.0/len(rank_samples):.2f}%" for i in range(len(rank_samples)))
+                            self.logger.info(
+                                f"        >>> [SAMPLES_SINCE_SYNC] Per-Node: [{sample_counts_str}] | Data Ratio: [{data_pct_str}]"
+                            )
+                            self.logger.info(
+                                f"        >>> [GLOBAL MODEL WEIGHT] Policy: {policy} -> Consensus Contribution: [{weight_pct_str}]"
+                            )
 
                         # Write to local_sgd_timeline.csv
                         if self.local_sgd_csv:

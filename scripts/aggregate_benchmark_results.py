@@ -44,6 +44,9 @@ def parse_run_dir(run_path: str) -> Dict[str, Any]:
                 m_ep = re.search(r"epochs:\s*(\d+)", c_text)
                 if m_ep:
                     info["epochs"] = int(m_ep.group(1))
+                m_pol = re.search(r"avg_policy:\s*(\w+)", c_text)
+                if m_pol:
+                    info["policy"] = m_pol.group(1)
         except Exception:
             pass
 
@@ -127,7 +130,10 @@ def main():
     print(f"{'Experiment Name':<35} {'Mode/H':<15} {'Epochs':<8} {'Wall-Clock':<12} {'Tput (img/s)':<14} {'Best Val%':<10} {'Test%':<8} {'Comm Rounds':<12}")
     print("-" * 110)
     for d in data:
-        mode_str = f"H={d['H']}" if "local_sgd" in d['mode'] else "AllReduce"
+        if "local_sgd" in d['mode']:
+            mode_str = f"H={d['H']} (unif)" if d['policy'] == "uniform" else f"H={d['H']}"
+        else:
+            mode_str = "AllReduce"
         m, s = divmod(int(d["wall_clock_s"]), 60)
         time_str = f"{m}m {s}s" if d["wall_clock_s"] > 0 else "In Progress"
         print(f"{d['name']:<35} {mode_str:<15} {d['epochs']:<8} {time_str:<12} {d['tput']:<14.1f} {d['best_val_acc']:<10.2f} {d['test_acc']:<8.2f} {d['comm_rounds']:<12}")

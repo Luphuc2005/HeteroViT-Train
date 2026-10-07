@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# HeteroViT-MPI: Local SGD Extended Training Suite (H=24 vs H=40, 40 Epochs, Seed 42)
+# HeteroViT-MPI: Suite H=20 & H=40-Uniform (40 Epochs, Seed 42, Batch 300)
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,24 +43,23 @@ run_step() {
 }
 
 echo "================================================================================"
-echo " HeteroViT-MPI: Starting Extended 40-Epoch Suite (H=24 vs H=40 with Seed 42)"
+echo " HeteroViT-MPI: Starting H=20 and H=40-Uniform Suite (40 Epochs, Seed 42)"
 echo " Target Epochs: $EPOCHS per experiment"
 echo " Started at   : $(date '+%Y-%m-%d %H:%M:%S')"
 echo "================================================================================"
 
-# Run 1: Local SGD H=24 (40 Epochs, Seed 42)
-run_step "1" "Local SGD H = 24 (40 Epochs, Seed 42)" "run_10_local_sgd_h24_40e.sh"
+# Step 1: Local SGD H=20 (sample_weighted, 40 Epochs)
+run_step "1" "Local SGD H = 20 (Sample Weighted)" "run_12_local_sgd_h20_40e.sh"
 
-# Run 2: Local SGD H=40 (40 Epochs, Seed 42)
-run_step "2" "Local SGD H = 40 (40 Epochs, Seed 42)" "run_11_local_sgd_h40_40e.sh"
+# Step 2: Local SGD H=40 (uniform averaging, 40 Epochs)
+run_step "2" "Local SGD H = 40 (Uniform Averaging)" "run_13_local_sgd_h40_uniform_40e.sh"
 
 cleanup_orphans
 
 echo ""
 echo "================================================================================"
-echo " HeteroViT-MPI: Extended 40-Epoch Suite Completed Successfully!"
+echo " HeteroViT-MPI: Suite Completed Successfully!"
 echo " Finished at: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "================================================================================"
 
-python3 "$SCRIPT_DIR/compare_seeds_h24_h40.py"
-
+python3 "$SCRIPT_DIR/aggregate_benchmark_results.py"

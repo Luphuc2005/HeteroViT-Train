@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # ==============================================================================
-# HeteroViT-MPI: Local SGD Seed Verification Suite (H=24 vs H=40, Seed 43)
+# HeteroViT-MPI: Local SGD Extended Training Suite (H=24 vs H=40, 40 Epochs, Seed 42)
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-EPOCHS="${1:-20}"
+EPOCHS="${1:-40}"
 
 cleanup_orphans() {
   echo ">>> [CLEANUP] Ensuring no orphan python/mpirun processes on cluster..."
@@ -26,7 +26,7 @@ run_step() {
   
   echo ""
   echo "================================================================================"
-  echo ">>> [$step_num/2] STARTING: $step_name ($EPOCHS Epochs, Seed 43)"
+  echo ">>> [$step_num/2] STARTING: $step_name ($EPOCHS Epochs, Seed 42)"
   echo ">>> Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
   echo "================================================================================"
   
@@ -43,24 +43,23 @@ run_step() {
 }
 
 echo "================================================================================"
-echo " HeteroViT-MPI: Starting Seed Verification Suite (H=24 vs H=40 with Seed 43)"
+echo " HeteroViT-MPI: Starting Extended 40-Epoch Suite (H=24 vs H=40 with Seed 42)"
 echo " Target Epochs: $EPOCHS per experiment"
 echo " Started at   : $(date '+%Y-%m-%d %H:%M:%S')"
 echo "================================================================================"
 
-# Run 1: Local SGD H=24 (Seed 43)
-run_step "1" "Local SGD H = 24 (Seed 43)" "run_08_local_sgd_h24_seed43_20e.sh"
+# Run 1: Local SGD H=24 (40 Epochs, Seed 42)
+run_step "1" "Local SGD H = 24 (40 Epochs, Seed 42)" "run_10_local_sgd_h24_40e.sh"
 
-# Run 2: Local SGD H=40 (Seed 43)
-run_step "2" "Local SGD H = 40 (Seed 43)" "run_09_local_sgd_h40_seed43_20e.sh"
+# Run 2: Local SGD H=40 (40 Epochs, Seed 42)
+run_step "2" "Local SGD H = 40 (40 Epochs, Seed 42)" "run_11_local_sgd_h40_40e.sh"
 
 cleanup_orphans
 
 echo ""
 echo "================================================================================"
-echo " HeteroViT-MPI: Seed Verification Suite Completed Successfully!"
+echo " HeteroViT-MPI: Extended 40-Epoch Suite Completed Successfully!"
 echo " Finished at: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "================================================================================"
 
 python3 "$SCRIPT_DIR/compare_seeds_h24_h40.py"
-

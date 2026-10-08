@@ -66,3 +66,4 @@ echo " Finished at: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "================================================================================"
 
 python3 "$SCRIPT_DIR/aggregate_benchmark_results.py"
+

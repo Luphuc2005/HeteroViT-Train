@@ -131,6 +131,11 @@ class MPITrainer(BaseTrainer):
 
         # Phase 1: Local-Step Synchronization configuration
         self.sync_mode = str(training_cfg.get("sync_mode", "gradient_allreduce")).lower()
+        self.local_sgd_policy = str(training_cfg.get("local_sgd_policy", "fixed")).lower()
+        if self.sync_mode == "drift_adaptive_h":
+            self.sync_mode = "local_sgd"
+            self.local_sgd_policy = "drift_adaptive_h"
+
         ls_cfg = training_cfg.get("local_steps", 10)
         self.local_steps = "full_epoch" if str(ls_cfg).lower() == "full_epoch" else int(ls_cfg)
         self.opt_state_sync = str(training_cfg.get("optimizer_state_sync", "preserve_local")).lower()
@@ -155,6 +160,38 @@ class MPITrainer(BaseTrainer):
                 local_sgd_cfg.get("policy", "sample_weighted")
             )
         ).lower()
+
+        # Adaptive Local SGD Controller Configuration (Legacy Heuristic, V1, V2, V3)
+        adaptive_cfg = training_cfg.get("adaptive_h", {})
+        is_adaptive_policy = self.local_sgd_policy in (
+            "drift_adaptive_h", "cba_h", "odd_h", "pdca_h",
+            "adaptive_v1", "adaptive_v2", "adaptive_v3",
+            "consensus_budget", "online_dynamics", "primal_dual",
+        )
+        if (
+            self.sync_mode in ("local_sgd", "periodic_averaging")
+            and (is_adaptive_policy or adaptive_cfg.get("enabled", False))
+        ):
+            from src.training.adaptive.controller_factory import build_adaptive_controller
+            from src.training.adaptive.controller_logging import AdaptiveStructuredLogger
+            run_d = self.logger.run_dir if (hasattr(self, "logger") and hasattr(self.logger, "run_dir")) else None
+            self.adaptive_controller = build_adaptive_controller(
+                config=self.config,
+                run_dir=run_d,
+                rank=self.rank,
+                comm=self.comm,
+            )
+            if self.adaptive_controller is not None:
+                self.is_drift_adaptive = True
+                self.local_sgd_h = getattr(self.adaptive_controller, "current_h", self.local_sgd_h)
+                self.adaptive_structured_logger = AdaptiveStructuredLogger(run_dir=run_d, rank=self.rank)
+            else:
+                self.is_drift_adaptive = False
+                self.adaptive_structured_logger = None
+        else:
+            self.is_drift_adaptive = False
+            self.adaptive_controller = None
+            self.adaptive_structured_logger = None
 
         # Enforce no gradient accumulation in Local SGD mode (pure per-step updates)
         if self.sync_mode in ("local_sgd", "periodic_averaging"):
@@ -1111,6 +1148,34 @@ class MPITrainer(BaseTrainer):
         sum_div = float(self.comm.allreduce(local_div, op=MPI.SUM))
         mean_divergence_l2 = sum_div / float(self.world_size)
 
+        # Compute normalized drift D_t and consensus metrics (V_t, Q_t, M_t) BEFORE model overwrite
+        global_drift = 0.0
+        drift_compute_time_sec = 0.0
+        consensus_metrics = None
+        if getattr(self, "is_drift_adaptive", False) and self.adaptive_controller is not None:
+            t_drift_start = time.perf_counter()
+            from src.training.adaptive.consensus_metrics import (
+                compute_local_consensus_stats,
+                reduce_consensus_metrics,
+            )
+            eps_drift = getattr(self.adaptive_controller, "epsilon", 1.0e-12)
+            tot_samples_val = int(total_samples) if policy == "sample_weighted" else int(samples_since_sync * self.world_size)
+            local_stats = compute_local_consensus_stats(
+                flat_w=flat_w,
+                global_flat_w=global_flat_w,
+                samples_since_sync=samples_since_sync,
+                total_samples=tot_samples_val,
+                epsilon=eps_drift,
+            )
+            consensus_metrics = reduce_consensus_metrics(
+                comm=self.comm,
+                local_stats=local_stats,
+                epsilon=eps_drift,
+                world_size=self.world_size,
+            )
+            global_drift = consensus_metrics.legacy_drift
+            drift_compute_time_sec = time.perf_counter() - t_drift_start
+
         # 4. Unpack global weights and update local model
         w_global = []
         offset = 0
@@ -1144,7 +1209,7 @@ class MPITrainer(BaseTrainer):
             max_weight_diff = 0.0
 
         sync_time_ms = (time.perf_counter() - t_sync_start) * 1000.0
-        return sync_time_ms, max_divergence_l2, mean_divergence_l2, max_weight_diff, communicated_bytes
+        return sync_time_ms, max_divergence_l2, mean_divergence_l2, max_weight_diff, communicated_bytes, global_drift, drift_compute_time_sec, consensus_metrics
 
     def _train_local_steps(self):
         """Executes Local-Step Synchronization training loop (Phase 1 Baseline)."""
@@ -1391,15 +1456,28 @@ class MPITrainer(BaseTrainer):
           - Logs: H, communication_rounds, samples_since_sync, model_sync_ms, communicated_bytes,
                   model_divergence_l2, throughput, accuracy.
         """
-        H = self.local_sgd_h
+        current_h = self.local_sgd_h
         policy = self.avg_policy
 
         if self.rank == 0:
             self.logger.info("=" * 88)
-            self.logger.info(" HETEROVIT-MPI: FIXED LOCAL SGD / PERIODIC MODEL AVERAGING")
-            self.logger.info("=" * 88)
-            self.logger.info(f"  Sync Mode            : local_sgd")
-            self.logger.info(f"  Synchronization H    : {H} local steps between model averagings")
+            if self.is_drift_adaptive and self.adaptive_controller is not None:
+                ctl_name = self.adaptive_controller.__class__.__name__
+                self.logger.info(f" HETEROVIT-MPI: ADAPTIVE LOCAL SGD ({ctl_name})")
+                self.logger.info("=" * 88)
+                self.logger.info(f"  Sync Mode            : local_sgd (policy: {self.local_sgd_policy})")
+                self.logger.info(f"  Initial H            : {current_h} (Candidates: {self.adaptive_controller.candidates})")
+                if hasattr(self.adaptive_controller, "tau_low"):
+                    self.logger.info(f"  Thresholds           : tau_low={self.adaptive_controller.tau_low}, tau_high={self.adaptive_controller.tau_high}")
+                elif hasattr(self.adaptive_controller, "risk_budget"):
+                    self.logger.info(f"  Risk Budget          : {self.adaptive_controller.risk_budget} | Dual Step: {self.adaptive_controller.dual_step_size}")
+                elif hasattr(self.adaptive_controller, "budget"):
+                    self.logger.info(f"  Consensus Budget     : {self.adaptive_controller.budget} ({self.adaptive_controller.metric_type})")
+            else:
+                self.logger.info(" HETEROVIT-MPI: FIXED LOCAL SGD / PERIODIC MODEL AVERAGING")
+                self.logger.info("=" * 88)
+                self.logger.info(f"  Sync Mode            : local_sgd")
+                self.logger.info(f"  Synchronization H    : {current_h} local steps between model averagings")
             self.logger.info(f"  Averaging Policy     : {policy}")
             self.logger.info(f"  Steps per Epoch      : {self.steps_per_epoch}")
             self.logger.info(f"  Total Epochs         : {self.epochs}")
@@ -1412,7 +1490,33 @@ class MPITrainer(BaseTrainer):
 
         total_steps_executed = (self.start_epoch - 1) * self.steps_per_epoch if self.start_epoch > 1 else 0
         total_comm_rounds = 0
+        total_compute_time_accum = 0.0
+        total_sync_time_accum = 0.0
+        total_val_time_accum = 0.0
+        total_overhead_time_accum = 0.0
         train_start_time = time.perf_counter()
+
+        if self.rank == 0 and getattr(self, "adaptive_structured_logger", None) is not None:
+            git_sha = "unknown"
+            try:
+                import subprocess
+                git_sha = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                ).decode("utf-8").strip()
+            except Exception:
+                pass
+            run_meta = {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "git_commit": git_sha,
+                "config": self.config,
+                "world_size": self.world_size,
+                "rank_batch_sizes": self.rank_batch_sizes,
+                "global_batch_size": self.global_batch_size,
+                "steps_per_epoch": self.steps_per_epoch,
+                "epochs": self.epochs,
+            }
+            self.adaptive_structured_logger.save_run_metadata(run_meta)
 
         for epoch in range(self.start_epoch, self.epochs + 1):
             epoch_start_time = time.perf_counter()
@@ -1460,18 +1564,29 @@ class MPITrainer(BaseTrainer):
                 # 3. Determine if model synchronization is triggered
                 is_epoch_end = (step == self.steps_per_epoch)
                 is_max_steps = (self.max_steps is not None and total_steps_executed >= self.max_steps)
-                need_sync = (steps_since_sync >= H) or (is_epoch_end and steps_since_sync > 0) or (is_max_steps and steps_since_sync > 0)
+                need_sync = (steps_since_sync >= current_h) or (is_epoch_end and steps_since_sync > 0) or (is_max_steps and steps_since_sync > 0)
 
                 if need_sync:
                     total_comm_rounds += 1
-                    is_forced = (steps_since_sync < H)
+                    planned_h_this_block = current_h
+                    if steps_since_sync >= current_h:
+                        sync_reason = "H_REACHED"
+                        is_forced = False
+                    elif is_epoch_end:
+                        sync_reason = "EPOCH_END"
+                        is_forced = True
+                    else:
+                        sync_reason = "TRAIN_END"
+                        is_forced = True
+
+                    compute_time_since_sync = time.perf_counter() - t_last_sync
 
                     # Gather per-rank samples since sync for reporting
                     rank_samples = self.comm.gather(samples_since_sync, root=0)
 
-                    # Execute model parameter averaging
+                    # Execute model parameter averaging (drift computed inside before overwrite)
                     do_verify = self.verify_sync_every_round or self.debug_sync or (is_epoch_end and self.verify_at_epoch_end)
-                    sync_ms, max_div_l2, mean_div_l2, max_diff, comm_bytes = self.synchronize_model_weights(
+                    sync_ms, max_div_l2, mean_div_l2, max_diff, comm_bytes, global_drift, drift_compute_time_sec, consensus_metrics = self.synchronize_model_weights(
                         policy=policy,
                         samples_since_sync=samples_since_sync,
                         verify_weights=do_verify,
@@ -1481,16 +1596,125 @@ class MPITrainer(BaseTrainer):
                     total_samples_since_sync = sum(rank_samples) if rank_samples else (samples_since_sync * self.world_size)
                     round_tput = total_samples_since_sync / max(round_duration, 1e-6)
 
+                    # Update cumulative runtime metrics
+                    total_compute_time_accum += compute_time_since_sync
+                    total_sync_time_accum += (sync_ms / 1000.0)
+                    total_overhead_time_accum += drift_compute_time_sec
+
+                    # Update Adaptive-H Controller if active
+                    decision = "KEEP"
+                    next_h = current_h
+                    decision_obj = None
+
+                    if getattr(self, "is_drift_adaptive", False) and self.adaptive_controller is not None:
+                        from src.training.adaptive.controller_base import SyncRecord, AdaptiveHControllerBase
+                        sync_record = SyncRecord(
+                            round_idx=total_comm_rounds,
+                            epoch=epoch,
+                            global_step=total_steps_executed,
+                            sync_reason=sync_reason,
+                            is_forced=is_forced,
+                            actual_local_steps=steps_since_sync,
+                            planned_h=planned_h_this_block,
+                            samples_since_sync=samples_since_sync,
+                            total_samples_since_sync=total_samples_since_sync,
+                            metrics=consensus_metrics,
+                            compute_time_sec=compute_time_since_sync,
+                            sync_time_sec=sync_ms / 1000.0,
+                            overhead_sec=drift_compute_time_sec,
+                            communicated_bytes=comm_bytes,
+                        )
+
+                        if isinstance(self.adaptive_controller, AdaptiveHControllerBase):
+                            if self.rank == 0:
+                                try:
+                                    remaining = self.steps_per_epoch - step if not is_epoch_end else self.steps_per_epoch
+                                    decision_obj = self.adaptive_controller.process_sync_event(
+                                        record=sync_record,
+                                        steps_remaining_in_epoch=remaining,
+                                    )
+                                    next_h = decision_obj.next_h
+                                    decision = decision_obj.decision
+                                except Exception as exc:
+                                    self.logger.error(
+                                        f"[ADAPTIVE CONTROLLER ERROR] Rank 0 caught exception in process_sync_event: {exc}. "
+                                        f"Falling back safely to current_h={current_h} to prevent cluster deadlock."
+                                    )
+                                    next_h = current_h
+                                    decision = "EXCEPTION_FALLBACK"
+                                    decision_obj = None
+                            next_h = self.comm.bcast(next_h, root=0)
+                            decision = self.comm.bcast(decision, root=0)
+
+                            if self.rank == 0 and getattr(self, "adaptive_structured_logger", None) is not None:
+                                self.adaptive_structured_logger.log_sync_event(sync_record)
+                                meta = decision_obj.metadata if decision_obj else {}
+                                self.adaptive_structured_logger.log_decision(
+                                    record=sync_record,
+                                    decision=decision_obj,
+                                    controller_type=meta.get("controller_type", "Adaptive"),
+                                    budget=meta.get("budget", meta.get("risk_budget", None)),
+                                    feasible_candidates=meta.get("feasible_candidates", None),
+                                    candidate_predictions=meta.get("candidate_predictions", meta.get("candidate_nominal_predictions", None)),
+                                    candidate_costs=meta.get("candidate_costs", None),
+                                    lagrangian_scores=meta.get("lagrangian_scores", None),
+                                    dual_variable=meta.get("dual_variable", None),
+                                )
+                        else:
+                            # Legacy DriftAdaptiveHController (V1 heuristic baseline)
+                            if self.rank == 0:
+                                try:
+                                    next_h, decision, _ = self.adaptive_controller.process_sync_event(
+                                        epoch=epoch,
+                                        global_step=total_steps_executed,
+                                        sync_reason=sync_reason,
+                                        actual_local_steps=steps_since_sync,
+                                        samples_since_sync=samples_since_sync,
+                                        global_drift=global_drift,
+                                        compute_time_since_last_sync=compute_time_since_sync,
+                                        sync_time_sec=sync_ms / 1000.0,
+                                        drift_compute_time_sec=drift_compute_time_sec,
+                                    )
+                                except Exception as exc:
+                                    self.logger.error(
+                                        f"[LEGACY ADAPTIVE ERROR] Rank 0 caught exception in process_sync_event: {exc}. "
+                                        f"Falling back safely to current_h={current_h} to prevent cluster deadlock."
+                                    )
+                                    next_h = current_h
+                                    decision = "EXCEPTION_FALLBACK"
+                            next_h = self.comm.bcast(next_h, root=0)
+                            decision = self.comm.bcast(decision, root=0)
+                            if self.rank == 0 and getattr(self, "adaptive_structured_logger", None) is not None:
+                                self.adaptive_structured_logger.log_sync_event(sync_record)
+
                     # Console logging on rank 0
                     if self.rank == 0:
                         tag = "[LOCAL SGD FORCED SYNC]" if is_forced else "[LOCAL SGD SYNC]"
                         self.logger.info(
                             f"  {tag} Round {total_comm_rounds:03d} (Ep {epoch:02d}, Step {step:03d}/{self.steps_per_epoch:03d}) | "
-                            f"H={H} (steps={steps_since_sync}) | Samples: {total_samples_since_sync} | "
+                            f"H={planned_h_this_block} (steps={steps_since_sync}) | Samples: {total_samples_since_sync} | "
                             f"Sync: {sync_ms:6.1f}ms | Comm: {comm_bytes/(1024*1024):5.2f}MB | "
                             f"Div L2: {max_div_l2:.4e} (mean: {mean_div_l2:.4e}) | "
                             f"Weight Diff: {max_diff:.1e} | Tput: {round_tput:5.1f} img/s"
                         )
+                        if self.is_drift_adaptive and self.adaptive_controller is not None:
+                            from src.training.adaptive.controller_base import AdaptiveHControllerBase
+                            if isinstance(self.adaptive_controller, AdaptiveHControllerBase):
+                                v_val = consensus_metrics.v_t if consensus_metrics else 0.0
+                                q_val = consensus_metrics.q_t if consensus_metrics else 0.0
+                                m_val = consensus_metrics.m_t if consensus_metrics else 0.0
+                                reason_text = f" | {decision_obj.reason}" if decision_obj else ""
+                                self.logger.info(
+                                    f"        >>> [ADAPTIVE_H] Round {total_comm_rounds:03d} | Consensus V_t={v_val:.4e}, "
+                                    f"Q_t={q_val:.4e}, M_t={m_val:.4e} | Reason: {sync_reason} | Decision: {decision} | "
+                                    f"Transition: H={planned_h_this_block} -> {next_h}{reason_text}"
+                                )
+                            else:
+                                self.logger.info(
+                                    f"        >>> [ADAPTIVE_H] Round {total_comm_rounds:03d} | Drift D_t={global_drift:.6e} "
+                                    f"(bounds: [{self.adaptive_controller.tau_low}, {self.adaptive_controller.tau_high}]) | "
+                                    f"Reason: {sync_reason} | Decision: {decision} | Transition: H={planned_h_this_block} -> {next_h}"
+                                )
                         if rank_samples and total_samples_since_sync > 0:
                             sample_counts_str = ", ".join(f"Lab0{i+1}:{s}" for i, s in enumerate(rank_samples))
                             data_pct_str = ", ".join(f"Lab0{i+1}:{s/total_samples_since_sync*100:.2f}%" for i, s in enumerate(rank_samples))
@@ -1513,7 +1737,7 @@ class MPITrainer(BaseTrainer):
                                     epoch,
                                     step,
                                     total_comm_rounds,
-                                    H,
+                                    planned_h_this_block,
                                     policy,
                                     int(is_forced),
                                     total_samples_since_sync,
@@ -1531,6 +1755,10 @@ class MPITrainer(BaseTrainer):
                                     f"{round_tput:.2f}",
                                 ])
                                 writer.writerow(row)
+
+                    # Update current_h for the next block
+                    current_h = next_h
+                    self.local_sgd_h = next_h
 
                     # Reset counters for next local window
                     steps_since_sync = 0
@@ -1581,6 +1809,7 @@ class MPITrainer(BaseTrainer):
             val_loss, val_acc = self.evaluate(self.dist_val_ds, val_steps_to_run)
             val_time = time.perf_counter() - val_start_time
             total_epoch_time = train_time + val_time
+            total_val_time_accum += val_time
 
             if self.rank == 0:
                 is_best = val_acc > self.best_val_accuracy
@@ -1611,8 +1840,31 @@ class MPITrainer(BaseTrainer):
                     total_epochs=self.epochs,
                     is_best=is_best,
                     best_val_acc=self.best_val_accuracy,
-                    cluster_info=f"local_sgd (H={H}, {policy}) | {self.global_batch_size} (comm_rounds={total_comm_rounds})",
+                    cluster_info=f"local_sgd (H={current_h}, {policy}) | {self.global_batch_size} (comm_rounds={total_comm_rounds})",
                 )
+
+                if getattr(self, "adaptive_structured_logger", None) is not None:
+                    self.adaptive_structured_logger.log_epoch_metrics(
+                        epoch=epoch,
+                        train_loss=avg_train_loss,
+                        train_acc=avg_train_acc,
+                        val_loss=val_loss,
+                        val_acc=val_acc,
+                        epoch_time_sec=total_epoch_time,
+                        train_time_sec=train_time,
+                        val_time_sec=val_time,
+                        learning_rate=curr_lr,
+                        cumulative_comm_rounds=total_comm_rounds,
+                        effective_throughput=train_tput,
+                    )
+                    self.adaptive_structured_logger.log_runtime_breakdown(
+                        epoch=epoch,
+                        total_elapsed_sec=time.perf_counter() - train_start_time,
+                        total_compute_sec=total_compute_time_accum,
+                        total_sync_sec=total_sync_time_accum,
+                        total_val_sec=total_val_time_accum,
+                        total_overhead_sec=total_overhead_time_accum,
+                    )
 
             # Log CPU, RAM, and GPU VRAM utilization across all cluster nodes
             self.log_cluster_resources(epoch)

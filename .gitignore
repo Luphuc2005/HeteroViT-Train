@@ -45,9 +45,16 @@ results/
 results/**
 checkpoints/
 checkpoints/**
+logs/
+logs/**
+plots/
+plots/**
+reports/
+reports/**
 *.h5
 *.weights.h5
 *.log
+*.out
 *.csv
 *.pt
 *.pth

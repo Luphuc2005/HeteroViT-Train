@@ -104,8 +104,101 @@ def parse_args():
         "--sync-mode",
         type=str,
         default=None,
-        choices=["gradient_allreduce", "local_steps", "local_sgd", "periodic_averaging"],
-        help="Synchronization mode: 'gradient_allreduce' (every step), 'local_steps' (delta sync), or 'local_sgd' (periodic model parameter averaging)",
+        choices=["gradient_allreduce", "local_steps", "local_sgd", "periodic_averaging", "drift_adaptive_h"],
+        help="Synchronization mode: 'gradient_allreduce' (every step), 'local_steps' (delta sync), 'local_sgd' (periodic model parameter averaging), or 'drift_adaptive_h'",
+    )
+    parser.add_argument(
+        "--local-sgd-policy",
+        type=str,
+        default=None,
+        choices=["fixed", "drift_adaptive_h", "cba_h", "odd_h", "pdca_h", "adaptive_v1", "adaptive_v2", "adaptive_v3"],
+        help="Local SGD synchronization policy: 'fixed', 'drift_adaptive_h' (legacy), 'cba_h' (V1), 'odd_h' (V2), or 'pdca_h' (V3)",
+    )
+    parser.add_argument(
+        "--adaptive-type",
+        type=str,
+        default=None,
+        choices=["drift_adaptive_h", "cba_h", "odd_h", "pdca_h", "adaptive_v1", "adaptive_v2", "adaptive_v3"],
+        help="Controller type: 'drift_adaptive_h' (legacy), 'cba_h' (V1), 'odd_h' (V2), 'pdca_h' (V3)",
+    )
+    parser.add_argument(
+        "--adaptive-candidates",
+        type=str,
+        default=None,
+        help="Comma-separated candidate H values for adaptive controller (e.g. '40,80,120,150')",
+    )
+    parser.add_argument(
+        "--adaptive-initial-h",
+        type=int,
+        default=None,
+        help="Initial synchronization period H for adaptive controller (e.g. 40)",
+    )
+    parser.add_argument(
+        "--adaptive-budget",
+        type=float,
+        default=None,
+        help="Consensus error / risk budget (for V1, V2, V3)",
+    )
+    parser.add_argument(
+        "--adaptive-growth-p",
+        type=float,
+        default=None,
+        help="Power-law drift growth exponent p for V1 / fallback (e.g. 2.0)",
+    )
+    parser.add_argument(
+        "--adaptive-metric-type",
+        type=str,
+        default=None,
+        choices=["normalized_q", "raw_v"],
+        help="Consensus metric formulation: 'normalized_q' (default) or 'raw_v'",
+    )
+    parser.add_argument(
+        "--adaptive-dual-lr",
+        type=float,
+        default=None,
+        help="Dual step size eta_mu for V3 Primal-Dual controller (e.g. 1.0)",
+    )
+    parser.add_argument(
+        "--adaptive-dual-init",
+        type=float,
+        default=None,
+        help="Initial dual multiplier mu_0 for V3 Primal-Dual controller (e.g. 0.0)",
+    )
+    parser.add_argument(
+        "--adaptive-dual-max",
+        type=float,
+        default=None,
+        help="Maximum upper cap for dual multiplier mu in V3 (e.g. 50.0)",
+    )
+    parser.add_argument(
+        "--adaptive-uncertainty",
+        type=float,
+        default=None,
+        help="Uncertainty multiplier kappa for V2/V3 (e.g. 1.0)",
+    )
+    parser.add_argument(
+        "--adaptive-forgetting",
+        type=float,
+        default=None,
+        help="RLS forgetting factor lambda for V2/V3 (e.g. 0.98)",
+    )
+    parser.add_argument(
+        "--adaptive-tau-low",
+        type=float,
+        default=None,
+        help="Lower drift threshold tau_low for legacy controller (e.g. 0.02)",
+    )
+    parser.add_argument(
+        "--adaptive-tau-high",
+        type=float,
+        default=None,
+        help="Upper drift threshold tau_high for legacy controller (e.g. 0.05)",
+    )
+    parser.add_argument(
+        "--adaptive-epsilon",
+        type=float,
+        default=None,
+        help="Epsilon for drift normalization denominator (e.g. 1.0e-12)",
     )
     parser.add_argument(
         "--local-sgd-h",
@@ -210,6 +303,40 @@ if args.name is not None:
     config["experiment"]["name"] = args.name
 if args.sync_mode is not None:
     config["training"]["sync_mode"] = args.sync_mode
+if args.local_sgd_policy is not None:
+    config["training"]["local_sgd_policy"] = args.local_sgd_policy
+if "adaptive_h" not in config["training"]:
+    config["training"]["adaptive_h"] = {}
+if args.adaptive_type is not None:
+    config["training"]["adaptive_h"]["type"] = args.adaptive_type
+if args.adaptive_candidates is not None:
+    config["training"]["adaptive_h"]["candidates"] = [int(x.strip()) for x in args.adaptive_candidates.split(",") if x.strip()]
+if args.adaptive_initial_h is not None:
+    config["training"]["adaptive_h"]["initial_h"] = int(args.adaptive_initial_h)
+if args.adaptive_budget is not None:
+    config["training"]["adaptive_h"]["budget"] = float(args.adaptive_budget)
+    config["training"]["adaptive_h"]["risk_budget"] = float(args.adaptive_budget)
+if args.adaptive_growth_p is not None:
+    config["training"]["adaptive_h"]["growth_exponent"] = float(args.adaptive_growth_p)
+    config["training"]["adaptive_h"]["fallback_exponent"] = float(args.adaptive_growth_p)
+if args.adaptive_metric_type is not None:
+    config["training"]["adaptive_h"]["metric_type"] = args.adaptive_metric_type
+if args.adaptive_dual_lr is not None:
+    config["training"]["adaptive_h"]["dual_step_size"] = float(args.adaptive_dual_lr)
+if args.adaptive_dual_init is not None:
+    config["training"]["adaptive_h"]["dual_initial"] = float(args.adaptive_dual_init)
+if args.adaptive_dual_max is not None:
+    config["training"]["adaptive_h"]["dual_max"] = float(args.adaptive_dual_max)
+if args.adaptive_uncertainty is not None:
+    config["training"]["adaptive_h"]["uncertainty_multiplier"] = float(args.adaptive_uncertainty)
+if args.adaptive_forgetting is not None:
+    config["training"]["adaptive_h"]["forgetting_factor"] = float(args.adaptive_forgetting)
+if args.adaptive_tau_low is not None:
+    config["training"]["adaptive_h"]["tau_low"] = float(args.adaptive_tau_low)
+if args.adaptive_tau_high is not None:
+    config["training"]["adaptive_h"]["tau_high"] = float(args.adaptive_tau_high)
+if args.adaptive_epsilon is not None:
+    config["training"]["adaptive_h"]["epsilon"] = float(args.adaptive_epsilon)
 if args.local_sgd_h is not None:
     config["training"]["local_sgd_h"] = int(args.local_sgd_h)
 if args.avg_policy is not None:

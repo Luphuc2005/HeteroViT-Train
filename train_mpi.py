@@ -276,6 +276,20 @@ def parse_args():
         help="Number of worker threads on rank 0 for parallel gradient chunk aggregation (e.g. 1, 4, 8, 12, 18)",
     )
     parser.add_argument(
+        "--comm-precision",
+        type=str,
+        default=None,
+        choices=["fp32", "fp16"],
+        help="Communication precision for model parameter synchronization: 'fp32' (default) or 'fp16'",
+    )
+    parser.add_argument(
+        "--comm-collective",
+        type=str,
+        default=None,
+        choices=["allreduce", "allgather"],
+        help="Collective communication algorithm for FP16 synchronization: 'allgather' (default for FP16) or 'allreduce'",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -357,6 +371,10 @@ if args.comm_backend is not None:
     config["training"]["comm_backend"] = args.comm_backend
 if args.ps_agg_threads is not None:
     config["training"]["ps_agg_threads"] = int(args.ps_agg_threads)
+if args.comm_precision is not None:
+    config["training"]["comm_precision"] = args.comm_precision
+if args.comm_collective is not None:
+    config["training"]["comm_collective"] = args.comm_collective
 
 if "dynamic_scheduler" not in config:
     config["dynamic_scheduler"] = {}

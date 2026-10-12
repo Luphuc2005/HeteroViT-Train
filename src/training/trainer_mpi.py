@@ -138,6 +138,12 @@ class MPITrainer(BaseTrainer):
 
         ls_cfg = training_cfg.get("local_steps", 10)
         self.local_steps = "full_epoch" if str(ls_cfg).lower() == "full_epoch" else int(ls_cfg)
+        self.comm_precision = str(training_cfg.get("comm_precision", "fp32")).lower()
+        if self.comm_precision not in ("fp32", "fp16"):
+            raise ValueError("comm_precision must be fp32 or fp16")
+        if self.comm_precision == "fp16" and self.sync_mode not in ("local_sgd", "periodic_averaging"):
+            raise ValueError("FP16 weight communication requires Local SGD")
+        self.comm_collective = str(training_cfg.get("comm_collective", "allreduce")).lower()
         self.opt_state_sync = str(training_cfg.get("optimizer_state_sync", "preserve_local")).lower()
         self.total_train_time = 0.0
 
@@ -304,6 +310,11 @@ class MPITrainer(BaseTrainer):
                     for r in range(self.world_size):
                         header.append(f"rank{r}_samples")
                     header.extend([
+                        "comm_dtype",
+                        "num_elements",
+                        "cast_down_ms",
+                        "mpi_comm_ms",
+                        "cast_up_ms",
                         "model_sync_ms",
                         "communicated_bytes",
                         "model_divergence_l2_max",
@@ -1120,27 +1131,24 @@ class MPITrainer(BaseTrainer):
         # 1. Flatten current local model weights into 1D float32 array
         local_weights = self.model.get_weights()
         flat_w = np.concatenate([w.ravel() for w in local_weights]).astype(np.float32)
-        communicated_bytes = int(flat_w.nbytes)
-
-        # 2. Compute consensus weights W_global according to policy (single blocking Allreduce)
-        if policy == "sample_weighted":
-            n_i = float(max(0, samples_since_sync))
-            weighted_flat_w = flat_w * n_i
-            sum_weighted = np.empty_like(weighted_flat_w)
-            self.comm.Allreduce(weighted_flat_w, sum_weighted, op=MPI.SUM)
-            total_samples = float(self.comm.allreduce(n_i, op=MPI.SUM))
-            if total_samples > 0.0:
-                global_flat_w = sum_weighted / total_samples
-            else:
-                sum_w = np.empty_like(flat_w)
-                self.comm.Allreduce(flat_w, sum_w, op=MPI.SUM)
-                global_flat_w = sum_w / float(self.world_size)
-        elif policy == "uniform":
-            sum_w = np.empty_like(flat_w)
-            self.comm.Allreduce(flat_w, sum_w, op=MPI.SUM)
-            global_flat_w = sum_w / float(self.world_size)
-        else:
-            raise ValueError(f"Unknown averaging policy: '{policy}'. Supported: 'sample_weighted', 'uniform'")
+        from src.training.weight_communication import average_weights
+        global_flat_w, total_samples, comm_stats = average_weights(
+            self.comm, flat_w, samples_since_sync, policy, self.comm_precision,
+            collective=getattr(self, "comm_collective", None))
+        if self.config.get("training", {}).get("comm_verify_reference", False):
+            reference, _, _ = average_weights(
+                self.comm, flat_w, samples_since_sync, policy, "fp32")
+            error = np.abs(global_flat_w - reference)
+            comm_stats.update(
+                max_absolute_error=float(error.max()),
+                mean_absolute_error=float(error.mean()),
+                relative_l2_error=float(np.linalg.norm(error) / max(float(np.linalg.norm(reference)), 1e-30)))
+        if self.comm_precision == "fp16" or verify_weights:
+            valid = bool(np.isfinite(global_flat_w).all())
+            valid = valid and all(w.dtype == np.float32 for w in local_weights)
+            if not self.comm.allreduce(valid, op=MPI.LAND):
+                raise RuntimeError("Weight sync requires finite results and FP32 model weights")
+        communicated_bytes = comm_stats["payload_bytes"]
 
         # 3. Compute local model divergence (L2 drift) before replacing weights
         local_div = float(np.linalg.norm(flat_w - global_flat_w))
@@ -1209,6 +1217,18 @@ class MPITrainer(BaseTrainer):
             max_weight_diff = 0.0
 
         sync_time_ms = (time.perf_counter() - t_sync_start) * 1000.0
+        comm_stats["total_sync_ms"] = sync_time_ms
+        self.last_sync_metrics = comm_stats
+        if hasattr(self.logger, "run_dir") and self.logger.run_dir:
+            path = os.path.join(self.logger.run_dir, f"weight_communication_rank{self.rank}.csv")
+            exists = os.path.exists(path)
+            with open(path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=list(comm_stats))
+                if not exists:
+                    writer.writeheader()
+                writer.writerow(comm_stats)
+        if self.rank == 0:
+            self.logger.info(f"[WEIGHT SYNC] {comm_stats}")
         return sync_time_ms, max_divergence_l2, mean_divergence_l2, max_weight_diff, communicated_bytes, global_drift, drift_compute_time_sec, consensus_metrics
 
     def _train_local_steps(self):
@@ -1479,6 +1499,7 @@ class MPITrainer(BaseTrainer):
                 self.logger.info(f"  Sync Mode            : local_sgd")
                 self.logger.info(f"  Synchronization H    : {current_h} local steps between model averagings")
             self.logger.info(f"  Averaging Policy     : {policy}")
+            self.logger.info(f"  Comm Precision       : {self.comm_precision.upper()} ({getattr(self, 'comm_collective', 'allreduce')})")
             self.logger.info(f"  Steps per Epoch      : {self.steps_per_epoch}")
             self.logger.info(f"  Total Epochs         : {self.epochs}")
             self.logger.info(f"  Local Batch Sizes    : {self.rank_batch_sizes} (Global Batch: {self.global_batch_size})")
@@ -1689,11 +1710,18 @@ class MPITrainer(BaseTrainer):
 
                     # Console logging on rank 0
                     if self.rank == 0:
+                        sync_stats = getattr(self, "last_sync_metrics", {})
                         tag = "[LOCAL SGD FORCED SYNC]" if is_forced else "[LOCAL SGD SYNC]"
+                        comm_time_str = (
+                            f" (comm: {sync_stats.get('communication_ms', 0.0):.1f}ms, "
+                            f"down: {sync_stats.get('cast_to_fp16_ms', 0.0):.1f}ms, "
+                            f"up: {sync_stats.get('cast_accumulation_ms', 0.0):.1f}ms)"
+                            if self.comm_precision == "fp16" else ""
+                        )
                         self.logger.info(
                             f"  {tag} Round {total_comm_rounds:03d} (Ep {epoch:02d}, Step {step:03d}/{self.steps_per_epoch:03d}) | "
                             f"H={planned_h_this_block} (steps={steps_since_sync}) | Samples: {total_samples_since_sync} | "
-                            f"Sync: {sync_ms:6.1f}ms | Comm: {comm_bytes/(1024*1024):5.2f}MB | "
+                            f"Sync: {sync_ms:6.1f}ms{comm_time_str} | Comm: {comm_bytes/(1024*1024):5.2f}MB ({self.comm_precision.upper()}) | "
                             f"Div L2: {max_div_l2:.4e} (mean: {mean_div_l2:.4e}) | "
                             f"Weight Diff: {max_diff:.1e} | Tput: {round_tput:5.1f} img/s"
                         )
@@ -1744,7 +1772,13 @@ class MPITrainer(BaseTrainer):
                                 ]
                                 for r in range(self.world_size):
                                     row.append(rank_samples[r] if rank_samples and r < len(rank_samples) else 0)
+                                sync_stats = getattr(self, "last_sync_metrics", {})
                                 row.extend([
+                                    self.comm_precision,
+                                    sync_stats.get("num_elements", 2693578),
+                                    f"{sync_stats.get('cast_to_fp16_ms', 0.0):.2f}",
+                                    f"{sync_stats.get('communication_ms', 0.0):.2f}",
+                                    f"{sync_stats.get('cast_accumulation_ms', 0.0):.2f}",
                                     f"{sync_ms:.2f}",
                                     comm_bytes,
                                     f"{max_div_l2:.6e}",

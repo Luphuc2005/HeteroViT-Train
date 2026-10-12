@@ -144,6 +144,15 @@ class MPITrainer(BaseTrainer):
         if self.comm_precision == "fp16" and self.sync_mode not in ("local_sgd", "periodic_averaging"):
             raise ValueError("FP16 weight communication requires Local SGD")
         self.comm_collective = str(training_cfg.get("comm_collective", "allreduce")).lower()
+        self.fp16_communicator = None
+        if self.comm_precision == "fp16":
+            from src.training.fp16_communicator import FP16Communicator
+            self.fp16_communicator = FP16Communicator(
+                comm=self.comm,
+                collective=self.comm_collective,
+                verify_reference=bool(training_cfg.get("comm_verify_reference", False)),
+                log_dir=getattr(self.logger, "run_dir", None),
+            )
         self.opt_state_sync = str(training_cfg.get("optimizer_state_sync", "preserve_local")).lower()
         self.total_train_time = 0.0
 
@@ -1131,23 +1140,44 @@ class MPITrainer(BaseTrainer):
         # 1. Flatten current local model weights into 1D float32 array
         local_weights = self.model.get_weights()
         flat_w = np.concatenate([w.ravel() for w in local_weights]).astype(np.float32)
-        from src.training.weight_communication import average_weights
-        global_flat_w, total_samples, comm_stats = average_weights(
-            self.comm, flat_w, samples_since_sync, policy, self.comm_precision,
-            collective=getattr(self, "comm_collective", None))
-        if self.config.get("training", {}).get("comm_verify_reference", False):
-            reference, _, _ = average_weights(
-                self.comm, flat_w, samples_since_sync, policy, "fp32")
-            error = np.abs(global_flat_w - reference)
-            comm_stats.update(
-                max_absolute_error=float(error.max()),
-                mean_absolute_error=float(error.mean()),
-                relative_l2_error=float(np.linalg.norm(error) / max(float(np.linalg.norm(reference)), 1e-30)))
-        if self.comm_precision == "fp16" or verify_weights:
-            valid = bool(np.isfinite(global_flat_w).all())
-            valid = valid and all(w.dtype == np.float32 for w in local_weights)
-            if not self.comm.allreduce(valid, op=MPI.LAND):
-                raise RuntimeError("Weight sync requires finite results and FP32 model weights")
+        # 2. Compute consensus weights W_global according to precision mode
+        if self.fp16_communicator is not None:
+            global_flat_w, total_samples, comm_stats = self.fp16_communicator.synchronize(
+                flat_w=flat_w,
+                samples_since_sync=samples_since_sync,
+                policy=policy,
+            )
+        else:
+            comm_stats = {
+                "communication_dtype": "fp32",
+                "collective": "allreduce",
+                "num_elements": int(flat_w.size),
+                "payload_bytes": int(flat_w.nbytes),
+                "cast_to_fp16_ms": 0.0,
+                "cast_accumulation_ms": 0.0,
+            }
+            t_comm = time.perf_counter()
+            if policy == "sample_weighted":
+                n_i = float(max(0, samples_since_sync))
+                weighted_flat_w = flat_w * n_i
+                sum_weighted = np.empty_like(weighted_flat_w)
+                self.comm.Allreduce(weighted_flat_w, sum_weighted, op=MPI.SUM)
+                total_samples = float(self.comm.allreduce(n_i, op=MPI.SUM))
+                if total_samples > 0.0:
+                    global_flat_w = sum_weighted / total_samples
+                else:
+                    sum_w = np.empty_like(flat_w)
+                    self.comm.Allreduce(flat_w, sum_w, op=MPI.SUM)
+                    global_flat_w = sum_w / float(self.world_size)
+            elif policy == "uniform":
+                sum_w = np.empty_like(flat_w)
+                self.comm.Allreduce(flat_w, sum_w, op=MPI.SUM)
+                global_flat_w = sum_w / float(self.world_size)
+                total_samples = float(samples_since_sync * self.world_size)
+            else:
+                raise ValueError(f"Unknown averaging policy: '{policy}'. Supported: 'sample_weighted', 'uniform'")
+            comm_stats["communication_ms"] = (time.perf_counter() - t_comm) * 1000.0
+
         communicated_bytes = comm_stats["payload_bytes"]
 
         # 3. Compute local model divergence (L2 drift) before replacing weights

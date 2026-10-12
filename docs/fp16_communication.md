@@ -1,5 +1,7 @@
 # FP16 weight communication baseline
 
+Detailed Vietnamese explanation: [FP16 quantization and Local SGD implementation story](fp16_delta_local_sgd_story_vi.md).
+
 Set `training.comm_precision: fp16` for Local SGD. Default `fp32` preserves
 weighted Allreduce. Training, optimizer and model weights remain FP32.
 With `comm_collective: allgather`, FP16 uses explicit MPI.BYTE buffers, then

@@ -139,9 +139,9 @@ class MPITrainer(BaseTrainer):
         ls_cfg = training_cfg.get("local_steps", 10)
         self.local_steps = "full_epoch" if str(ls_cfg).lower() == "full_epoch" else int(ls_cfg)
         self.comm_precision = str(training_cfg.get("comm_precision", "fp32")).lower()
-        if self.comm_precision not in ("fp32", "fp16"):
-            raise ValueError("comm_precision must be fp32 or fp16")
-        if self.comm_precision == "fp16" and self.sync_mode not in ("local_sgd", "periodic_averaging"):
+        if self.comm_precision not in ("fp32", "fp16", "fp16_delta_allgather", "fp16_delta_allreduce"):
+            raise ValueError("Unsupported comm_precision")
+        if self.comm_precision.startswith("fp16") and self.sync_mode not in ("local_sgd", "periodic_averaging"):
             raise ValueError("FP16 weight communication requires Local SGD")
         self.comm_collective = str(training_cfg.get("comm_collective", "allreduce")).lower()
         self.fp16_communicator = None
@@ -152,6 +152,14 @@ class MPITrainer(BaseTrainer):
                 collective=self.comm_collective,
                 verify_reference=bool(training_cfg.get("comm_verify_reference", False)),
                 log_dir=getattr(self.logger, "run_dir", None),
+            )
+        self.delta_communicator = None
+        if self.comm_precision.startswith("fp16_delta_"):
+            from src.training.fp16_delta_communicator import FP16DeltaCommunicator
+            self.comm_collective = self.comm_precision[len("fp16_delta_"):]
+            self.delta_communicator = FP16DeltaCommunicator(
+                self.comm, self.comm_collective,
+                verify_reference=bool(training_cfg.get("comm_verify_reference", False)),
             )
         self.opt_state_sync = str(training_cfg.get("optimizer_state_sync", "preserve_local")).lower()
         self.total_train_time = 0.0
@@ -1141,7 +1149,11 @@ class MPITrainer(BaseTrainer):
         local_weights = self.model.get_weights()
         flat_w = np.concatenate([w.ravel() for w in local_weights]).astype(np.float32)
         # 2. Compute consensus weights W_global according to precision mode
-        if self.fp16_communicator is not None:
+        if self.delta_communicator is not None:
+            global_flat_w, total_samples, comm_stats = self.delta_communicator.synchronize(
+                flat_w, samples_since_sync, policy,
+            )
+        elif self.fp16_communicator is not None:
             global_flat_w, total_samples, comm_stats = self.fp16_communicator.synchronize(
                 flat_w=flat_w,
                 samples_since_sync=samples_since_sync,
@@ -1248,6 +1260,8 @@ class MPITrainer(BaseTrainer):
 
         sync_time_ms = (time.perf_counter() - t_sync_start) * 1000.0
         comm_stats["total_sync_ms"] = sync_time_ms
+        if self.delta_communicator is not None:
+            comm_stats["sync_total_ms"] = sync_time_ms
         self.last_sync_metrics = comm_stats
         if hasattr(self.logger, "run_dir") and self.logger.run_dir:
             path = os.path.join(self.logger.run_dir, f"weight_communication_rank{self.rank}.csv")
@@ -2437,6 +2451,26 @@ class MPITrainer(BaseTrainer):
     def train(self):
         """Executes training loop based on configured sync_mode."""
         try:
+            if self.delta_communicator is not None:
+                weights = self.model.get_weights()
+                valid = all(w.dtype == np.float32 for w in weights)
+                valid = valid and all(v.dtype.as_numpy_dtype == np.float32
+                                      for v in self.model.trainable_variables)
+                valid = valid and self.model.dtype_policy.compute_dtype == "float32"
+                valid = valid and all(
+                    not v.dtype.is_floating or v.dtype.as_numpy_dtype == np.float32
+                    for v in self.optimizer.variables())
+                if not self.comm.allreduce(valid, op=MPI.LAND):
+                    raise ValueError("FP16 delta requires FP32 model, compute and optimizer state")
+                flat = np.concatenate([w.ravel() for w in weights]).astype(np.float32)
+                self.comm.Bcast(flat, root=0)
+                offset = 0
+                shared = []
+                for w in weights:
+                    shared.append(flat[offset:offset + w.size].reshape(w.shape).copy())
+                    offset += w.size
+                self.model.set_weights(shared)
+                self.delta_communicator.set_anchor(flat)
             if self.sync_mode in ("local_sgd", "periodic_averaging"):
                 self._train_local_sgd()
             elif self.sync_mode == "local_steps":

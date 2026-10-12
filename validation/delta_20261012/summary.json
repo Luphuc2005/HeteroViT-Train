@@ -1,0 +1,93 @@
+{
+  "passed": true,
+  "transport_tests_per_rank": 12,
+  "nodes": 5,
+  "modes": {
+    "allgather": {
+      "steps": 120,
+      "synchronization_rounds": 3,
+      "payload_bytes_per_rank": 5387156,
+      "optimizer_iterations_on_every_rank": 120,
+      "model_and_optimizer_finite_fp32": true,
+      "identical_global_model": true,
+      "max_weight_diff": 0,
+      "max_relative_l2_quantization_error": 0.00020883458968921204,
+      "max_relative_l2_reference_error": 0.00020497887982039156,
+      "rank_metrics": [
+        {
+          "rank": 0,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.00020772345961589644,
+          "max_relative_l2_reference_error": 0.00020497887982039156
+        },
+        {
+          "rank": 1,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.00020883458968921204,
+          "max_relative_l2_reference_error": 0.00020497072818296655
+        },
+        {
+          "rank": 2,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.0002084810236142176,
+          "max_relative_l2_reference_error": 0.00020497072818296655
+        },
+        {
+          "rank": 3,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.0002084873384404892,
+          "max_relative_l2_reference_error": 0.00020497072818296655
+        },
+        {
+          "rank": 4,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.0002086535134891617,
+          "max_relative_l2_reference_error": 0.00020497887982039156
+        }
+      ]
+    },
+    "allreduce": {
+      "steps": 120,
+      "synchronization_rounds": 3,
+      "payload_bytes_per_rank": 5387156,
+      "optimizer_iterations_on_every_rank": 120,
+      "model_and_optimizer_finite_fp32": true,
+      "identical_global_model": true,
+      "max_weight_diff": 0,
+      "max_relative_l2_quantization_error": 0.000500747069747061,
+      "max_relative_l2_reference_error": 0.000408178558910835,
+      "rank_metrics": [
+        {
+          "rank": 0,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.00020774214898220411,
+          "max_relative_l2_reference_error": 0.000408178558910835
+        },
+        {
+          "rank": 1,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.0002835496339118496,
+          "max_relative_l2_reference_error": 0.00040815973145518023
+        },
+        {
+          "rank": 2,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.00030506340010584375,
+          "max_relative_l2_reference_error": 0.00040815973145518023
+        },
+        {
+          "rank": 3,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.000500747069747061,
+          "max_relative_l2_reference_error": 0.00040815973145518023
+        },
+        {
+          "rank": 4,
+          "rounds": 3,
+          "max_relative_l2_quantization_error": 0.000223290818919204,
+          "max_relative_l2_reference_error": 0.000408178558910835
+        }
+      ]
+    }
+  }
+}

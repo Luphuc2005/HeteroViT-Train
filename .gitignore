@@ -76,3 +76,9 @@ libdevice.10.bc
 
 # nii
 nii_notes/
+
+# Keep the compact delta validation report, not raw local artifacts
+validation/delta_20261012/*
+!validation/delta_20261012/README.md
+!validation/delta_20261012/summary.json
+!validation/delta_20261012/summarize.py

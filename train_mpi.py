@@ -279,8 +279,8 @@ def parse_args():
         "--comm-precision",
         type=str,
         default=None,
-        choices=["fp32", "fp16"],
-        help="Communication precision for model parameter synchronization: 'fp32' (default) or 'fp16'",
+        choices=["fp32", "fp16", "fp16_delta_allgather", "fp16_delta_allreduce"],
+        help="Model synchronization: fp32, fp16 whole weights, fp16_delta_allgather or fp16_delta_allreduce",
     )
     parser.add_argument(
         "--comm-collective",

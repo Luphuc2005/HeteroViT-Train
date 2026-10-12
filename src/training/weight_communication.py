@@ -5,7 +5,13 @@ from mpi4py import MPI
 from src.training.fp16_communicator import FP16Communicator
 
 
-def average_weights(comm, flat, samples, policy='sample_weighted', precision='fp32', collective=None):
+def average_weights(comm, flat, samples, policy='sample_weighted', precision='fp32', collective=None, global_prev=None):
+    from src.training.fp16_delta_communicator import DELTA_MODES, FP16DeltaCommunicator
+    if precision in DELTA_MODES:
+        transport = FP16DeltaCommunicator(comm, collective=precision[len('fp16_delta_'):])
+        transport.set_anchor(global_prev)
+        return transport.synchronize(flat, samples, policy)
+
     if precision not in ('fp32', 'fp16') or policy not in ('sample_weighted', 'uniform'):
         raise ValueError('Unsupported communication precision or averaging policy')
 

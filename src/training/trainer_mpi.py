@@ -263,10 +263,11 @@ class MPITrainer(BaseTrainer):
         self.ps_chunks = []
         self.total_grad_elements = 0
 
-        # Step-level Detailed Timing Breakdown CSV (all ranks per step)
+        # Local SGD writes per-rank files to avoid adding per-step collectives.
         self.step_timing_csv = None
-        if self.rank == 0 and hasattr(self.logger, "run_dir") and self.logger.run_dir:
-            self.step_timing_csv = os.path.join(self.logger.run_dir, "step_timing_breakdown.csv")
+        if (self.rank == 0 or self.sync_mode in ("local_sgd", "periodic_averaging")) and hasattr(self.logger, "run_dir") and self.logger.run_dir:
+            filename = "step_timing_breakdown.csv" if self.rank == 0 else f"step_timing_breakdown_rank{self.rank}.csv"
+            self.step_timing_csv = os.path.join(self.logger.run_dir, filename)
             if not os.path.exists(self.step_timing_csv):
                 with open(self.step_timing_csv, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
@@ -985,12 +986,26 @@ class MPITrainer(BaseTrainer):
 
         return metrics
 
-    def log_cluster_resources(self, epoch: int):
+    def log_cluster_resources(self, epoch: int, local_sgd_timing=None):
         """Gathers and logs CPU, RAM, and GPU VRAM resource utilization across all cluster nodes."""
         node_res = self.get_resource_metrics()
+        if local_sgd_timing is not None:
+            node_res["local_sgd_timing"] = local_sgd_timing
         all_res = self.comm.gather(node_res, root=0)
 
         if self.rank == 0 and all_res:
+            if local_sgd_timing is not None and self.timeline_csv:
+                critical_compute = max(r["local_sgd_timing"]["compute_ms"] for r in all_res)
+                with open(self.timeline_csv, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    for r in sorted(all_res, key=lambda item: item["rank"]):
+                        timing = r["local_sgd_timing"]
+                        writer.writerow([
+                            epoch, r["rank"], r["host"], r["device"], timing["batch_size"],
+                            timing["local_loss"], timing["local_acc"], timing["compute_ms"],
+                            timing["wait_ms"], 100.0 * timing["wait_ms"] / max(timing["train_ms"], 1e-6),
+                            int(timing["compute_ms"] == critical_compute),
+                        ])
             self.logger.info("=" * 96)
             self.logger.info(f" [CLUSTER HARDWARE RESOURCE UTILIZATION - EPOCH {epoch:02d}]")
             self.logger.info(f"  {'Rank':<5} {'Host':<10} {'Device':<6} {'CPU%':<7} {'Proc RAM':<12} {'System RAM (Used / Total)':<28} {'GPU VRAM':<22}")
@@ -1508,6 +1523,38 @@ class MPITrainer(BaseTrainer):
                 f"({self.total_train_time / 60:.2f} minutes)."
             )
 
+    def _record_local_sgd_step(self, epoch, step, step_start, fetch_end,
+                               compute_end, wait_start, wait_end, sync_end):
+        """Record local timings without MPI calls.
+
+        compute includes the local optimizer update; comm spans the complete
+        model synchronization. Payload-only MPI timing remains in the weight
+        communication CSV. wait measures the existing sample-count gather.
+        """
+        step_end = time.perf_counter()
+        if self.runtime_profiler is not None:
+            self.runtime_profiler.record_step(
+                step_id=(epoch - 1) * self.steps_per_epoch + step,
+                local_batch=self.local_batch_size,
+                compute_start=fetch_end, compute_end=compute_end,
+                sync_enter=wait_start, sync_exit=wait_end,
+                comm_start=wait_end, comm_end=sync_end,
+                step_wall_time=step_end - step_start,
+            )
+        if self.step_timing_csv:
+            data_ms = (fetch_end - step_start) * 1000.0
+            compute_ms = (compute_end - fetch_end) * 1000.0
+            wait_ms = (wait_end - wait_start) * 1000.0
+            sync_ms = (sync_end - wait_end) * 1000.0
+            step_ms = (step_end - step_start) * 1000.0
+            other_ms = max(0.0, step_ms - data_ms - compute_ms - wait_ms - sync_ms)
+            with open(self.step_timing_csv, "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    epoch, step, self.rank, self.local_batch_size,
+                    data_ms, compute_ms, sync_ms, 0.0, wait_ms, other_ms, step_ms,
+                    0.0, 0.0, 0.0, 0.0,
+                ])
+
     def _train_local_sgd(self):
         """Executes Fixed Local SGD / Periodic Model Parameter Averaging training loop.
 
@@ -1589,6 +1636,9 @@ class MPITrainer(BaseTrainer):
             total_train_acc = 0.0
             step_count = 0
 
+            epoch_compute_ms = 0.0
+            epoch_wait_ms = 0.0
+
             steps_since_sync = 0
             samples_since_sync = 0
             t_last_sync = time.perf_counter()
@@ -1609,6 +1659,7 @@ class MPITrainer(BaseTrainer):
                 else:
                     images, labels = None, None
 
+                t_fetch_end = time.perf_counter()
                 # 2. Local Train Step (Forward, Backward, Optimizer Update - STRICTLY LOCAL)
                 # NO gradient AllReduce across ranks. NO gradient accumulation.
                 if self.local_batch_size > 0 and images is not None:
@@ -1619,7 +1670,10 @@ class MPITrainer(BaseTrainer):
                     loss_val = 0.0
                     acc_val = 0.0
 
-                step_time = time.perf_counter() - t_step_start
+                t_compute_end = time.perf_counter()
+                step_time = t_compute_end - t_step_start
+                epoch_compute_ms += (t_compute_end - t_fetch_end) * 1000.0
+                t_wait_start = t_wait_end = t_model_sync_end = t_compute_end
                 total_train_loss += loss_val
                 total_train_acc += acc_val
                 step_count += 1
@@ -1647,7 +1701,10 @@ class MPITrainer(BaseTrainer):
                     compute_time_since_sync = time.perf_counter() - t_last_sync
 
                     # Gather per-rank samples since sync for reporting
+                    t_wait_start = time.perf_counter()
                     rank_samples = self.comm.gather(samples_since_sync, root=0)
+                    t_wait_end = time.perf_counter()
+                    epoch_wait_ms += (t_wait_end - t_wait_start) * 1000.0
 
                     # Execute model parameter averaging (drift computed inside before overwrite)
                     do_verify = self.verify_sync_every_round or self.debug_sync or (is_epoch_end and self.verify_at_epoch_end)
@@ -1656,6 +1713,7 @@ class MPITrainer(BaseTrainer):
                         samples_since_sync=samples_since_sync,
                         verify_weights=do_verify,
                     )
+                    t_model_sync_end = time.perf_counter()
 
                     round_duration = time.perf_counter() - t_last_sync
                     total_samples_since_sync = sum(rank_samples) if rank_samples else (samples_since_sync * self.world_size)
@@ -1843,6 +1901,11 @@ class MPITrainer(BaseTrainer):
                     samples_since_sync = 0
                     t_last_sync = time.perf_counter()
 
+                self._record_local_sgd_step(
+                    epoch, step, t_step_start, t_fetch_end, t_compute_end,
+                    t_wait_start, t_wait_end, t_model_sync_end,
+                )
+
                 # 4. Periodic step logging on rank 0
                 is_smoke = self.max_steps is not None and self.max_steps <= 50
                 if self.rank == 0 and (step % self.log_interval == 0 or step == self.steps_per_epoch or is_smoke):
@@ -1945,7 +2008,12 @@ class MPITrainer(BaseTrainer):
                     )
 
             # Log CPU, RAM, and GPU VRAM utilization across all cluster nodes
-            self.log_cluster_resources(epoch)
+            self.log_cluster_resources(epoch, local_sgd_timing={
+                "batch_size": self.local_batch_size,
+                "local_loss": avg_train_loss, "local_acc": avg_train_acc,
+                "compute_ms": epoch_compute_ms, "wait_ms": epoch_wait_ms,
+                "train_ms": train_time * 1000.0,
+            })
 
             import gc
             gc.collect()
@@ -2482,72 +2550,47 @@ class MPITrainer(BaseTrainer):
                 self.agg_executor.shutdown(wait=False)
 
     def evaluate(self, dataset, steps: int) -> Tuple[float, float]:
-        """Evaluates model performance on validation/test dataset.
+        """Evaluate on rank 0, weighting every example equally across replicas.
 
-        To prevent CPU straggler bottleneck (~75s wait per epoch), only Rank 0 (2x Titan Z GPU)
-        evaluates the complete validation dataset (5,000 images). CPU worker ranks skip immediately.
+        Raw datasets (including final test) are distributed once before running
+        the replica function. Distributed validation datasets are used as-is.
         """
         if self.rank != 0:
             return 0.0, 0.0
 
-        if dataset is None:
+        if dataset is None or (steps is not None and steps <= 0):
             return 0.0, 0.0
 
+        def val_step_fn(images, labels):
+            predictions = self.model(images, training=False)
+            per_example_loss = tf.keras.losses.sparse_categorical_crossentropy(
+                labels, predictions, from_logits=True,
+            )
+            labels = tf.reshape(labels, [-1])
+            pred_labels = tf.argmax(predictions, axis=-1, output_type=labels.dtype)
+            correct = tf.reduce_sum(tf.cast(tf.equal(pred_labels, labels), tf.float32))
+            count = tf.cast(tf.size(labels), tf.float32)
+            return tf.reduce_sum(per_example_loss), correct, count
+
         if self.strategy is not None:
-            global_batch = int(self.local_batch_size)
-
-            def val_step_fn(images, labels):
-                predictions = self.model(images, training=False)
-                per_example_loss = self.loss_fn(labels, predictions)
-                loss = tf.nn.compute_average_loss(per_example_loss, global_batch_size=global_batch)
-                pred_labels = tf.argmax(predictions, axis=-1, output_type=labels.dtype)
-                accuracy = tf.reduce_mean(tf.cast(tf.equal(pred_labels, labels), tf.float32))
-                return loss, accuracy
-
+            if isinstance(dataset, tf.data.Dataset):
+                dataset = self.strategy.experimental_distribute_dataset(dataset)
             @tf.function
             def dist_val_step(images, labels):
-                per_replica_losses, per_replica_accs = self.strategy.run(val_step_fn, args=(images, labels))
-                total_loss = self.strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses, axis=None)
-                total_acc = self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_accs, axis=None)
-                return total_loss, total_acc
-
-            total_loss = 0.0
-            total_acc = 0.0
-            num_batches = 0
-
-            for images, labels in dataset:
-                loss, acc = dist_val_step(images, labels)
-                total_loss += float(loss)
-                total_acc += float(acc)
-                num_batches += 1
-                if steps is not None and num_batches >= steps:
-                    break
-
-            avg_loss = total_loss / max(num_batches, 1)
-            avg_acc = total_acc / max(num_batches, 1)
-            return avg_loss, avg_acc
+                totals = self.strategy.run(val_step_fn, args=(images, labels))
+                return tuple(self.strategy.reduce(tf.distribute.ReduceOp.SUM, value, axis=None)
+                             for value in totals)
+            evaluate_batch = dist_val_step
         else:
-            total_loss = 0.0
-            total_acc = 0.0
-            num_batches = 0
+            evaluate_batch = tf.function(val_step_fn)
 
-            @tf.function
-            def local_val_step(images, labels):
-                predictions = self.model(images, training=False)
-                loss = self.loss_fn(labels, predictions)
-                pred_labels = tf.argmax(predictions, axis=-1, output_type=labels.dtype)
-                accuracy = tf.reduce_mean(tf.cast(tf.equal(pred_labels, labels), tf.float32))
-                return loss, accuracy
-
-            for images, labels in dataset:
-                loss, acc = local_val_step(images, labels)
-                total_loss += float(loss)
-                total_acc += float(acc)
-                num_batches += 1
-                if steps is not None and num_batches >= steps:
-                    break
-
-            avg_loss = total_loss / max(num_batches, 1)
-            avg_acc = total_acc / max(num_batches, 1)
-            return avg_loss, avg_acc
+        total_loss = total_correct = total_examples = 0.0
+        for batch_index, (images, labels) in enumerate(dataset, start=1):
+            loss, correct, count = evaluate_batch(images, labels)
+            total_loss += float(loss)
+            total_correct += float(correct)
+            total_examples += float(count)
+            if steps is not None and batch_index >= steps:
+                break
+        return total_loss / max(total_examples, 1.0), total_correct / max(total_examples, 1.0)
 

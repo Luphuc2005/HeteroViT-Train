@@ -1,4 +1,4 @@
-"""Validate matched configs and summarize five-method sweep reports.
+"""Validate matched configs and summarize selected-method sweep reports.
 
 The original whole-weight FP16 CSV has two rows per sync and an incomplete
 header. Only trainer rows containing total_sync_ms enter timing aggregates.
@@ -20,10 +20,12 @@ METHODS = {
 }
 
 
-def check_configs(root):
+def check_configs(root, methods=None):
     import yaml
+    methods = list(METHODS) if methods is None else methods
     common = None
-    for method, (filename, precision, collective) in METHODS.items():
+    for method in methods:
+        filename, precision, collective = METHODS[method]
         config = yaml.safe_load((root / 'configs/mpi' / filename).read_text())
         training = config['training']
         if (training.get('comm_precision', 'fp32') != precision
@@ -43,7 +45,7 @@ def check_configs(root):
             common = normalized
         elif normalized != common:
             raise ValueError('Unmatched model/training/runtime settings for ' + method)
-    print('PASS: five matched configs; H=40, seed=42, reference=false')
+    print('PASS: %d matched base configs; H=40, base seed=42, reference=false' % len(methods))
 
 
 def communication_rows(path):
@@ -73,9 +75,10 @@ def communication_rows(path):
     return rows
 
 
-def summarize(root):
+def summarize(root, methods=None):
+    methods = list(METHODS) if methods is None else methods
     summaries = []
-    for method in METHODS:
+    for method in methods:
         rank_metrics = []
         for rank in range(5):
             path = root / 'ranks' / method / ('rank%d' % rank) / ('weight_communication_rank%d.csv' % rank)
@@ -110,15 +113,16 @@ def summarize(root):
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(summaries)
-    print('Summarized %d/5 methods: %s' % (len(summaries), root / 'summary.csv'))
+    print('Summarized %d/%d methods: %s' % (len(summaries), len(methods), root / 'summary.csv'))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-configs', action='store_true')
+    parser.add_argument('--methods', nargs='+', choices=list(METHODS), default=None)
     parser.add_argument('root', type=Path)
     args = parser.parse_args()
     if args.check_configs:
-        check_configs(args.root)
+        check_configs(args.root, args.methods)
     else:
-        summarize(args.root)
+        summarize(args.root, args.methods)

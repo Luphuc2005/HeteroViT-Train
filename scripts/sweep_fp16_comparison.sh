@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
-# Run the five H=40 methods sequentially from an isolated source snapshot.
+# Run selected H=40 methods sequentially from an isolated source snapshot.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SOURCE_ROOT="$PROJECT_ROOT/HeteroViT-MPI"
 EPOCHS=40
+SEED=42
+METHOD_LIST=fp32,fp16_whole_allgather,fp16_whole_allreduce,fp16_delta_allgather,fp16_delta_allreduce
 MAX_STEPS=""
 DRY_RUN=0
 while (($#)); do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
+    --seed)
+      if (($# < 2)) || [[ ! "$2" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "--seed requires a nonnegative integer" >&2; exit 2
+      fi
+      SEED="$2"; shift 2 ;;
+    --methods)
+      if (($# < 2)) || [[ ! "$2" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]]; then
+        echo "--methods requires comma-separated method names" >&2; exit 2
+      fi
+      METHOD_LIST="$2"; shift 2 ;;
     --epochs|--max-steps)
       option="$1"
       if (($# < 2)) || [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
@@ -18,32 +30,39 @@ while (($#)); do
       if [[ "$option" == --epochs ]]; then EPOCHS="$2"; else MAX_STEPS="$2"; fi
       shift 2 ;;
     -h|--help)
-      echo "Usage: bash $0 [--dry-run] [--epochs N] [--max-steps N]"
+      echo "Usage: bash $0 [--dry-run] [--epochs N] [--max-steps N] [--seed N] [--methods NAME,NAME]"
       exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
-METHODS=(fp32 fp16_whole_allgather fp16_whole_allreduce fp16_delta_allgather fp16_delta_allreduce)
-CONFIGS=(
-  local_sgd_h40_fp32_40e.yaml
-  local_sgd_h40_fp16_allgather_40e.yaml
-  local_sgd_h40_fp16_40e.yaml
-  local_sgd_h40_fp16_delta_allgather_40e.yaml
-  local_sgd_h40_fp16_delta_allreduce_40e.yaml
-)
+IFS=',' read -r -a METHODS <<< "$METHOD_LIST"
+CONFIGS=()
+declare -A SEEN_METHODS=()
+for method in "${METHODS[@]}"; do
+  [[ -z "${SEEN_METHODS[$method]:-}" ]] || { echo "Duplicate method: $method" >&2; exit 2; }
+  SEEN_METHODS[$method]=1
+  case "$method" in
+    fp32) CONFIGS+=(local_sgd_h40_fp32_40e.yaml) ;;
+    fp16_whole_allgather) CONFIGS+=(local_sgd_h40_fp16_allgather_40e.yaml) ;;
+    fp16_whole_allreduce) CONFIGS+=(local_sgd_h40_fp16_40e.yaml) ;;
+    fp16_delta_allgather) CONFIGS+=(local_sgd_h40_fp16_delta_allgather_40e.yaml) ;;
+    fp16_delta_allreduce) CONFIGS+=(local_sgd_h40_fp16_delta_allreduce_40e.yaml) ;;
+    *) echo "Unknown method: $method" >&2; exit 2 ;;
+  esac
+done
 for config in "${CONFIGS[@]}"; do
   [[ -f "$SOURCE_ROOT/configs/mpi/$config" ]] || { echo "Missing config: $config" >&2; exit 1; }
 done
 # Dry run prints the fixed experiment plan; performs no network access or training.
 if ((DRY_RUN)); then
   for i in "${!METHODS[@]}"; do
-    echo "${METHODS[$i]} | ${CONFIGS[$i]} | epochs=$EPOCHS H=40 seed=42 reference=false max_steps=${MAX_STEPS:-full}"
+    echo "${METHODS[$i]} | ${CONFIGS[$i]} | epochs=$EPOCHS H=40 seed=$SEED reference=false max_steps=${MAX_STEPS:-full}"
   done
   exit 0
 fi
 
 mkdir -p "$SOURCE_ROOT/results"
-SWEEP_DIR="$(mktemp -d "$SOURCE_ROOT/results/fp16_sweep_XXXXXXXX")"
+SWEEP_DIR="$(mktemp -d "$SOURCE_ROOT/results/fp16_sweep_seed${SEED}_XXXXXXXX")"
 STAGE_DIR="$(mktemp -d /tmp/heterovit_fp16_sweep_XXXXXXXX)"
 export OUTPUT_DIR="$SWEEP_DIR/results"
 mkdir -p "$STAGE_DIR/cluster" "$OUTPUT_DIR" "$SWEEP_DIR/ranks"
@@ -74,16 +93,16 @@ MPI_ARGS=(
 )
 echo "Sweep output: $SWEEP_DIR"
 # Reference diagnostic/preflight is separate from timed training runs.
-"$STAGE_DIR/cluster/python_by_host.sh" "$STAGE_DIR/tools/summarize_fp16_sweep.py" --check-configs "$STAGE_DIR"
+"$STAGE_DIR/cluster/python_by_host.sh" "$STAGE_DIR/tools/summarize_fp16_sweep.py" --check-configs "$STAGE_DIR" --methods "${METHODS[@]}"
 mpirun "${MPI_ARGS[@]}" tools/preflight_delta_runtime.py configs/mpi/local_sgd_h40_fp16_delta_allgather_40e.yaml > "$SWEEP_DIR/runtime.json" 2> "$SWEEP_DIR/runtime.stderr"
 EXTRA_ARGS=()
 [[ -z "$MAX_STEPS" ]] || EXTRA_ARGS=(--max-steps "$MAX_STEPS")
 for i in "${!METHODS[@]}"; do
   method="${METHODS[$i]}"
-  echo "Starting $method (epochs=$EPOCHS, H=40, seed=42)"
+  echo "Starting $method (epochs=$EPOCHS, H=40, seed=$SEED)"
   mpirun "${MPI_ARGS[@]}" train_mpi.py \
     --config "configs/mpi/${CONFIGS[$i]}" --name "$method" \
-    --epochs "$EPOCHS" --seed 42 "${EXTRA_ARGS[@]}" 2>&1 | tee "$SWEEP_DIR/$method.log"
+    --epochs "$EPOCHS" --seed "$SEED" "${EXTRA_ARGS[@]}" 2>&1 | tee "$SWEEP_DIR/$method.log"
   # Each node stores its own run directory; collect only reports, not checkpoints.
   mkdir -p "$SWEEP_DIR/ranks/$method/rank0"
   shopt -s nullglob
@@ -99,7 +118,7 @@ for i in "${!METHODS[@]}"; do
       --include='*/' --include='*.csv' --include='*.json' --include='config.yaml' --include='run.log' --exclude='*' \
       "icip@${WORKERS[$j]}:$OUTPUT_DIR/${method}_*/" "$SWEEP_DIR/ranks/$method/rank$rank/"
   done
-  "$STAGE_DIR/cluster/python_by_host.sh" "$STAGE_DIR/tools/summarize_fp16_sweep.py" "$SWEEP_DIR"
+  "$STAGE_DIR/cluster/python_by_host.sh" "$STAGE_DIR/tools/summarize_fp16_sweep.py" "$SWEEP_DIR" --methods "${METHODS[@]}"
   echo "Completed $method"
 done
 printf 'completed\n' > "$SWEEP_DIR/status.txt"

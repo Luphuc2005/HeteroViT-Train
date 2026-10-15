@@ -1,0 +1,172 @@
+{
+  "seed": 43,
+  "steps_per_rank": 120,
+  "sync_rounds": 3,
+  "world_size": 5,
+  "scope": "real_cluster_training_smoke_not_accuracy_or_performance_comparison",
+  "result_root": "results/fp16_sweep_seed43_5jdeOPhh",
+  "methods": [
+    {
+      "method": "fp16_delta_allgather",
+      "passed": true,
+      "ranks": [
+        {
+          "rank": 0,
+          "host": "iciplab01",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_20261015_120432",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7a753b6ca91d8d9711c1c8d4214cda554ff6654bb0d60a21f5d35ea69d310ea1",
+          "error_feedback": false,
+          "residual_l2_norm": 0.0,
+          "valid": true
+        },
+        {
+          "rank": 1,
+          "host": "iciplab02",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_20261015_120431",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7a753b6ca91d8d9711c1c8d4214cda554ff6654bb0d60a21f5d35ea69d310ea1",
+          "error_feedback": false,
+          "residual_l2_norm": 0.0,
+          "valid": true
+        },
+        {
+          "rank": 2,
+          "host": "iciplab03",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_20261015_120431",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7a753b6ca91d8d9711c1c8d4214cda554ff6654bb0d60a21f5d35ea69d310ea1",
+          "error_feedback": false,
+          "residual_l2_norm": 0.0,
+          "valid": true
+        },
+        {
+          "rank": 3,
+          "host": "iciplab04",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_20261015_120431",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7a753b6ca91d8d9711c1c8d4214cda554ff6654bb0d60a21f5d35ea69d310ea1",
+          "error_feedback": false,
+          "residual_l2_norm": 0.0,
+          "valid": true
+        },
+        {
+          "rank": 4,
+          "host": "iciplab05",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_20261015_120431",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7a753b6ca91d8d9711c1c8d4214cda554ff6654bb0d60a21f5d35ea69d310ea1",
+          "error_feedback": false,
+          "residual_l2_norm": 0.0,
+          "valid": true
+        }
+      ]
+    },
+    {
+      "method": "fp16_delta_allgather_ef",
+      "passed": true,
+      "ranks": [
+        {
+          "rank": 0,
+          "host": "iciplab01",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_ef_20261015_120609",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7482fff04a39fd216e4159b432d0fc47a8d8acdd27f2a6a9e36a0a8bc31a0f68",
+          "error_feedback": true,
+          "residual_l2_norm": 0.0009798992118927367,
+          "valid": true,
+          "saved_state_valid": true,
+          "residual_bytes": 10774312
+        },
+        {
+          "rank": 1,
+          "host": "iciplab02",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_ef_20261015_120608",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7482fff04a39fd216e4159b432d0fc47a8d8acdd27f2a6a9e36a0a8bc31a0f68",
+          "error_feedback": true,
+          "residual_l2_norm": 0.001444385563350117,
+          "valid": true,
+          "saved_state_valid": true,
+          "residual_bytes": 10774312
+        },
+        {
+          "rank": 2,
+          "host": "iciplab03",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_ef_20261015_120608",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7482fff04a39fd216e4159b432d0fc47a8d8acdd27f2a6a9e36a0a8bc31a0f68",
+          "error_feedback": true,
+          "residual_l2_norm": 0.0015339500217450089,
+          "valid": true,
+          "saved_state_valid": true,
+          "residual_bytes": 10774312
+        },
+        {
+          "rank": 3,
+          "host": "iciplab04",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_ef_20261015_120608",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7482fff04a39fd216e4159b432d0fc47a8d8acdd27f2a6a9e36a0a8bc31a0f68",
+          "error_feedback": true,
+          "residual_l2_norm": 0.0013626727731196199,
+          "valid": true,
+          "saved_state_valid": true,
+          "residual_bytes": 10774312
+        },
+        {
+          "rank": 4,
+          "host": "iciplab05",
+          "run_dir": "/home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results/fp16_sweep_seed43_5jdeOPhh/results/fp16_delta_allgather_ef_20261015_120608",
+          "optimizer_iterations": 120,
+          "optimizer_variables": 208,
+          "optimizer_dtypes": [
+            "float32"
+          ],
+          "model_sha256": "7482fff04a39fd216e4159b432d0fc47a8d8acdd27f2a6a9e36a0a8bc31a0f68",
+          "error_feedback": true,
+          "residual_l2_norm": 0.001617108871738165,
+          "valid": true,
+          "saved_state_valid": true,
+          "residual_bytes": 10774312
+        }
+      ]
+    }
+  ]
+}

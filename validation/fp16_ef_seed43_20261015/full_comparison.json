@@ -1,0 +1,176 @@
+{
+  "seed": 43,
+  "epochs": 40,
+  "result_root": "results/fp16_sweep_seed43_2tyCNQ2H",
+  "status": "completed",
+  "methods": [
+    {
+      "method": "fp16_delta_allgather",
+      "test_accuracy_percent": 65.86,
+      "training_time_seconds": 2606.04,
+      "synchronization_rounds": 160,
+      "max_rank_communication_total_ms": 306291.1361043807,
+      "max_rank_sync_total_ms": 1002516.1426069681,
+      "max_rank_encode_total_ms": 4959.805891849101,
+      "max_rank_decode_total_ms": 16551.002067979425,
+      "payload_bytes_per_rank": 5387156,
+      "rank_metrics": [
+        {
+          "rank": 0,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 306222.55638451315,
+          "sync_total_ms": 402877.0570573397,
+          "encode_total_ms": 3338.1044974084944,
+          "decode_total_ms": 10107.741571497172,
+          "payload_bytes": 5387156
+        },
+        {
+          "rank": 1,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 306127.6130140759,
+          "sync_total_ms": 669843.4303526301,
+          "encode_total_ms": 2839.1736082267016,
+          "decode_total_ms": 9801.110586384311,
+          "payload_bytes": 5387156
+        },
+        {
+          "rank": 2,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 306291.1361043807,
+          "sync_total_ms": 608736.9046886452,
+          "encode_total_ms": 4959.805891849101,
+          "decode_total_ms": 16456.105436896905,
+          "payload_bytes": 5387156
+        },
+        {
+          "rank": 3,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 306046.7640904244,
+          "sync_total_ms": 604871.8494253699,
+          "encode_total_ms": 4959.531710483134,
+          "decode_total_ms": 16551.002067979425,
+          "payload_bytes": 5387156
+        },
+        {
+          "rank": 4,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 306198.5799309332,
+          "sync_total_ms": 1002516.1426069681,
+          "encode_total_ms": 2693.5022794641554,
+          "decode_total_ms": 9204.063777346164,
+          "payload_bytes": 5387156
+        }
+      ]
+    },
+    {
+      "method": "fp16_delta_allgather_ef",
+      "test_accuracy_percent": 65.34,
+      "training_time_seconds": 2521.61,
+      "synchronization_rounds": 160,
+      "max_rank_communication_total_ms": 306236.10417335294,
+      "max_rank_sync_total_ms": 882371.2973636575,
+      "max_rank_encode_total_ms": 9190.249854931608,
+      "max_rank_decode_total_ms": 15610.39255047217,
+      "payload_bytes_per_rank": 5387156,
+      "rank_metrics": [
+        {
+          "rank": 0,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 305147.50487706624,
+          "sync_total_ms": 407287.6835735515,
+          "encode_total_ms": 8569.341767346486,
+          "decode_total_ms": 9767.891037743539,
+          "payload_bytes": 5387156
+        },
+        {
+          "rank": 1,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 305349.1260658484,
+          "sync_total_ms": 677166.4597829804,
+          "encode_total_ms": 4626.007657265291,
+          "decode_total_ms": 9242.007083958015,
+          "payload_bytes": 5387156
+        },
+        {
+          "rank": 2,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 305310.6909734197,
+          "sync_total_ms": 519793.1704784278,
+          "encode_total_ms": 9167.843392817304,
+          "decode_total_ms": 15586.241660173982,
+          "payload_bytes": 5387156
+        },
+        {
+          "rank": 3,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 306165.74944439344,
+          "sync_total_ms": 518383.45996430144,
+          "encode_total_ms": 9190.249854931608,
+          "decode_total_ms": 15610.39255047217,
+          "payload_bytes": 5387156
+        },
+        {
+          "rank": 4,
+          "synchronization_rounds": 160,
+          "communication_total_ms": 306236.10417335294,
+          "sync_total_ms": 882371.2973636575,
+          "encode_total_ms": 4555.053607560694,
+          "decode_total_ms": 8846.219546627253,
+          "payload_bytes": 5387156
+        }
+      ]
+    }
+  ],
+  "ef_final_states": [
+    {
+      "rank": 0,
+      "anchor_sha256": "4dcaba5f4434e4df0d68665417c90fb5ee5ec8cb8a3c393d48ee58552346c794",
+      "residual_l2_norm": 0.0012732170560672419,
+      "valid": true
+    },
+    {
+      "rank": 1,
+      "anchor_sha256": "4dcaba5f4434e4df0d68665417c90fb5ee5ec8cb8a3c393d48ee58552346c794",
+      "residual_l2_norm": 0.0016766474271327082,
+      "valid": true
+    },
+    {
+      "rank": 2,
+      "anchor_sha256": "4dcaba5f4434e4df0d68665417c90fb5ee5ec8cb8a3c393d48ee58552346c794",
+      "residual_l2_norm": 0.0014601607461364233,
+      "valid": true
+    },
+    {
+      "rank": 3,
+      "anchor_sha256": "4dcaba5f4434e4df0d68665417c90fb5ee5ec8cb8a3c393d48ee58552346c794",
+      "residual_l2_norm": 0.001515348721169308,
+      "valid": true
+    },
+    {
+      "rank": 4,
+      "anchor_sha256": "4dcaba5f4434e4df0d68665417c90fb5ee5ec8cb8a3c393d48ee58552346c794",
+      "residual_l2_norm": 0.0014919089595516377,
+      "valid": true
+    }
+  ],
+  "rank0_step_totals_seconds": {
+    "fp16_delta_allgather": {
+      "compute_ms": 1614.7956018960103,
+      "barrier_ms": 369.20339331170544,
+      "allreduce_ms": 402.97072077938356,
+      "step_ms": 2398.1509347362444
+    },
+    "fp16_delta_allgather_ef": {
+      "compute_ms": 1639.503152942052,
+      "barrier_ms": 255.61984973633662,
+      "allreduce_ms": 407.3825969679747,
+      "step_ms": 2313.6888221374247
+    }
+  },
+  "comparison": {
+    "accuracy_difference_pp": -0.519999999999996,
+    "training_time_difference_seconds": -84.42999999999984,
+    "training_time_change_percent": -3.2397814308299133,
+    "interpretation": "Single-seed EF accuracy lower; timing difference accompanies less rank-0 gather waiting, not smaller payload"
+  }
+}

@@ -9,9 +9,13 @@ SEED=42
 METHOD_LIST=fp32,fp16_whole_allgather,fp16_whole_allreduce,fp16_delta_allgather,fp16_delta_allreduce
 MAX_STEPS=""
 DRY_RUN=0
+FP16_DIAGNOSTIC=0
+VERIFY_DELTA_STATE=0
 while (($#)); do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
+    --fp16-diagnostic) FP16_DIAGNOSTIC=1; shift ;;
+    --verify-delta-state) VERIFY_DELTA_STATE=1; shift ;;
     --seed)
       if (($# < 2)) || [[ ! "$2" =~ ^(0|[1-9][0-9]*)$ ]]; then
         echo "--seed requires a nonnegative integer" >&2; exit 2
@@ -30,7 +34,7 @@ while (($#)); do
       if [[ "$option" == --epochs ]]; then EPOCHS="$2"; else MAX_STEPS="$2"; fi
       shift 2 ;;
     -h|--help)
-      echo "Usage: bash $0 [--dry-run] [--epochs N] [--max-steps N] [--seed N] [--methods NAME,NAME]"
+      echo "Usage: bash $0 [--dry-run] [--epochs N] [--max-steps N] [--seed N] [--methods NAME,NAME] [--fp16-diagnostic] [--verify-delta-state]"
       exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
@@ -46,10 +50,28 @@ for method in "${METHODS[@]}"; do
     fp16_whole_allgather) CONFIGS+=(local_sgd_h40_fp16_allgather_40e.yaml) ;;
     fp16_whole_allreduce) CONFIGS+=(local_sgd_h40_fp16_40e.yaml) ;;
     fp16_delta_allgather) CONFIGS+=(local_sgd_h40_fp16_delta_allgather_40e.yaml) ;;
+    fp16_delta_allgather_ef) CONFIGS+=(local_sgd_h40_fp16_delta_allgather_ef_40e.yaml) ;;
     fp16_delta_allreduce) CONFIGS+=(local_sgd_h40_fp16_delta_allreduce_40e.yaml) ;;
     *) echo "Unknown method: $method" >&2; exit 2 ;;
   esac
 done
+ENTRYPOINT=train_mpi.py
+if ((VERIFY_DELTA_STATE)); then
+  [[ -n "$MAX_STEPS" && "$FP16_DIAGNOSTIC" -eq 0 ]] || {
+    echo "--verify-delta-state requires --max-steps and excludes --fp16-diagnostic" >&2; exit 2;
+  }
+  for method in "${METHODS[@]}"; do
+    [[ "$method" == fp16_delta_* ]] || { echo "State smoke requires delta methods" >&2; exit 2; }
+  done
+  ENTRYPOINT=tools/smoke_delta_training.py
+fi
+if ((FP16_DIAGNOSTIC)); then
+  [[ "$METHOD_LIST" == fp32 && -n "$MAX_STEPS" ]] || {
+    echo "--fp16-diagnostic requires --methods fp32 and --max-steps N" >&2; exit 2;
+  }
+  CONFIGS=(fp16_same_inputs_seed43_smoke.yaml)
+  ENTRYPOINT=tools/diagnose_fp16_same_inputs.py
+fi
 for config in "${CONFIGS[@]}"; do
   [[ -f "$SOURCE_ROOT/configs/mpi/$config" ]] || { echo "Missing config: $config" >&2; exit 1; }
 done
@@ -58,6 +80,10 @@ if ((DRY_RUN)); then
   for i in "${!METHODS[@]}"; do
     echo "${METHODS[$i]} | ${CONFIGS[$i]} | epochs=$EPOCHS H=40 seed=$SEED reference=false max_steps=${MAX_STEPS:-full}"
   done
+  if ((FP16_DIAGNOSTIC)); then
+    echo "diagnostic: same-input whole/delta FP16 AllGather shadows; only FP32 applied; timing excluded from performance comparison"
+  fi
+  if ((VERIFY_DELTA_STATE)); then echo "state smoke: verify FP32 model/optimizer, anchor consensus and EF residual"; fi
   exit 0
 fi
 
@@ -68,6 +94,11 @@ export OUTPUT_DIR="$SWEEP_DIR/results"
 mkdir -p "$STAGE_DIR/cluster" "$OUTPUT_DIR" "$SWEEP_DIR/ranks"
 printf '%s\n' "$STAGE_DIR" > "$SWEEP_DIR/source_stage.txt"
 printf 'running\n' > "$SWEEP_DIR/status.txt"
+if ((FP16_DIAGNOSTIC)); then
+  printf 'same_input_fp16_diagnostic\n' > "$SWEEP_DIR/run_kind.txt"
+else
+  printf 'training_comparison\n' > "$SWEEP_DIR/run_kind.txt"
+fi
 trap 'rc=$?; if ((rc != 0)); then printf "failed exit=%s\n" "$rc" > "$SWEEP_DIR/status.txt"; fi' EXIT
 for folder in src configs tests tools; do
   rsync -a --exclude='__pycache__' --exclude='*.pyc' "$SOURCE_ROOT/$folder" "$STAGE_DIR/"
@@ -100,7 +131,7 @@ EXTRA_ARGS=()
 for i in "${!METHODS[@]}"; do
   method="${METHODS[$i]}"
   echo "Starting $method (epochs=$EPOCHS, H=40, seed=$SEED)"
-  mpirun "${MPI_ARGS[@]}" train_mpi.py \
+  mpirun "${MPI_ARGS[@]}" "$ENTRYPOINT" \
     --config "configs/mpi/${CONFIGS[$i]}" --name "$method" \
     --epochs "$EPOCHS" --seed "$SEED" "${EXTRA_ARGS[@]}" 2>&1 | tee "$SWEEP_DIR/$method.log"
   # Each node stores its own run directory; collect only reports, not checkpoints.
@@ -109,17 +140,25 @@ for i in "${!METHODS[@]}"; do
   runs=("$OUTPUT_DIR/${method}_"*)
   shopt -u nullglob
   [[ "${#runs[@]}" -eq 1 ]] || { echo "Expected one rank0 run directory for $method" >&2; exit 1; }
-  rsync -a --include='*/' --include='*.csv' --include='*.json' --include='config.yaml' --include='run.log' --exclude='*' \
+  rsync -a --include='*/' --include='*.csv' --include='*.json' --include='fp16_ef_state_rank*.npz' --include='config.yaml' --include='run.log' --exclude='*' \
     "${runs[0]}/" "$SWEEP_DIR/ranks/$method/rank0/"
   for j in "${!WORKERS[@]}"; do
     rank=$((j + 1))
     mkdir -p "$SWEEP_DIR/ranks/$method/rank$rank"
     rsync -az -e 'ssh -o BatchMode=yes -o ConnectTimeout=10' \
-      --include='*/' --include='*.csv' --include='*.json' --include='config.yaml' --include='run.log' --exclude='*' \
+      --include='*/' --include='*.csv' --include='*.json' --include='fp16_ef_state_rank*.npz' --include='config.yaml' --include='run.log' --exclude='*' \
       "icip@${WORKERS[$j]}:$OUTPUT_DIR/${method}_*/" "$SWEEP_DIR/ranks/$method/rank$rank/"
   done
-  "$STAGE_DIR/cluster/python_by_host.sh" "$STAGE_DIR/tools/summarize_fp16_sweep.py" "$SWEEP_DIR" --methods "${METHODS[@]}"
+  if ((FP16_DIAGNOSTIC)); then
+    cp "$SWEEP_DIR/ranks/$method/rank0/fp16_same_inputs_summary.json" "$SWEEP_DIR/diagnostic_summary.json"
+  else
+    "$STAGE_DIR/cluster/python_by_host.sh" "$STAGE_DIR/tools/summarize_fp16_sweep.py" "$SWEEP_DIR" --methods "${METHODS[@]}"
+  fi
   echo "Completed $method"
 done
 printf 'completed\n' > "$SWEEP_DIR/status.txt"
-echo "Sweep complete: $SWEEP_DIR/summary.csv"
+if ((FP16_DIAGNOSTIC)); then
+  echo "Diagnostic complete: $SWEEP_DIR/diagnostic_summary.json"
+else
+  echo "Sweep complete: $SWEEP_DIR/summary.csv"
+fi

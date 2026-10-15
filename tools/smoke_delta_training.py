@@ -19,6 +19,10 @@ weights = trainer.model.get_weights()
 optimizer_variables = trainer.optimizer.variables()
 flat = np.concatenate([w.ravel() for w in weights])
 iterations = int(trainer.optimizer.iterations.numpy())
+feedback = getattr(trainer, 'comm_error_feedback', False)
+residual = trainer.delta_communicator.residual if feedback else None
+residual_valid = (not feedback or (residual.dtype == np.float32
+                  and residual.shape == flat.shape and np.isfinite(residual).all()))
 valid = (trainer.delta_communicator is not None
          and iterations == trainer.max_steps
          and trainer.model.dtype_policy.compute_dtype == 'float32'
@@ -26,11 +30,15 @@ valid = (trainer.delta_communicator is not None
          and all(not v.dtype.is_floating or (
              v.dtype.as_numpy_dtype == np.float32 and np.isfinite(v.numpy()).all())
                  for v in optimizer_variables)
-         and np.array_equal(flat, trainer.delta_communicator.global_prev))
+         and np.array_equal(flat, trainer.delta_communicator.global_prev)
+         and residual_valid)
 report = dict(rank=comm.rank, host=state['hostname'], run_dir=trainer.logger.run_dir,
               optimizer_iterations=iterations, optimizer_variables=len(optimizer_variables),
               optimizer_dtypes=sorted(set(v.dtype.name for v in optimizer_variables)),
-              model_sha256=hashlib.sha256(flat.tobytes()).hexdigest(), valid=bool(valid))
+              model_sha256=hashlib.sha256(flat.tobytes()).hexdigest(),
+              error_feedback=feedback,
+              residual_l2_norm=float(np.linalg.norm(residual.astype(np.float64))) if feedback else 0.0,
+              valid=bool(valid))
 reports = comm.allgather(report)
 passed = all(r['valid'] for r in reports) and len(set(r['model_sha256'] for r in reports)) == 1
 if comm.rank == 0:

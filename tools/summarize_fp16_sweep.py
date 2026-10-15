@@ -16,6 +16,7 @@ METHODS = {
     'fp16_whole_allgather': ('local_sgd_h40_fp16_allgather_40e.yaml', 'fp16', 'allgather'),
     'fp16_whole_allreduce': ('local_sgd_h40_fp16_40e.yaml', 'fp16', 'allreduce'),
     'fp16_delta_allgather': ('local_sgd_h40_fp16_delta_allgather_40e.yaml', 'fp16_delta_allgather', 'allgather'),
+    'fp16_delta_allgather_ef': ('local_sgd_h40_fp16_delta_allgather_ef_40e.yaml', 'fp16_delta_allgather', 'allgather'),
     'fp16_delta_allreduce': ('local_sgd_h40_fp16_delta_allreduce_40e.yaml', 'fp16_delta_allreduce', 'allreduce'),
 }
 
@@ -30,6 +31,7 @@ def check_configs(root, methods=None):
         training = config['training']
         if (training.get('comm_precision', 'fp32') != precision
                 or training.get('comm_collective', 'allreduce') != collective
+                or training.get('comm_error_feedback', False) != (method == 'fp16_delta_allgather_ef')
                 or training.get('comm_verify_reference', False)
                 or training.get('verify_sync_every_round', False)):
             raise ValueError('Invalid communication settings for ' + method)
@@ -39,7 +41,7 @@ def check_configs(root, methods=None):
             raise ValueError('Invalid fixed experiment settings for ' + method)
         normalized = copy.deepcopy(config)
         normalized.pop('experiment')
-        for field in ('comm_precision', 'comm_collective', 'comm_verify_reference', 'verify_sync_every_round'):
+        for field in ('comm_precision', 'comm_collective', 'comm_verify_reference', 'verify_sync_every_round', 'comm_error_feedback'):
             normalized['training'].pop(field, None)
         if common is None:
             common = normalized

@@ -1,0 +1,18 @@
+# Run with: bash scripts/run_fp16_followup.sh --phase diagnostic
+# This is a run plan, not a train_mpi.py model config.
+diagnostic:
+  seed: 43
+  epochs: 3
+  max_steps: 360
+  # Actual training uses FP32. Both FP16 AllGather methods are shadows on the
+  # same local weights and the same preceding FP32 global anchor each round.
+smoke:
+  seed: 43
+  epochs: 1
+  max_steps: 120
+full:
+  seeds: [43]
+  epochs: 40
+  methods:
+    - fp16_delta_allgather
+    - fp16_delta_allgather_ef

@@ -99,6 +99,30 @@ model and averaging arithmetic remain FP32 except the Allreduce callback.
 Payload is `2 * number_of_model_elements` per rank, not measured wire traffic.
 Delta sends the same dense number of elements as whole weights; no sparsification.
 
+## Delta FP16 error feedback
+
+Set `training.comm_error_feedback: true` with
+`comm_precision: fp16_delta_allgather` to use a separate
+`FP16DeltaEFCommunicator`. It computes `u = delta + residual`, sends `FP16(u)`,
+and retains `u - FP32(FP16(u))` locally in FP32. Only successful collective
+rounds commit the next residual. Payload size and FP32 decode/averaging remain
+unchanged. FP16 AllReduce is not supported by this option. Relative sample
+weights must remain fixed, including across epoch-end partial windows.
+
+Telemetry adds `error_feedback`, `residual_bytes`, `residual_l2_norm`,
+`error_feedback_ms`, and `quantization_error_target=delta_plus_residual`.
+The existing Eq field refers to the compensated input, not raw delta. Reference
+checking compares against raw FP32 delta and can therefore include correction
+from previous rounds. Feedback does not claim to compensate FP32 accumulation,
+model reconstruction, or optimizer drift.
+
+Each rank saves a final `fp16_ef_state_rankN.npz` with anchor, residual and sample
+weights before best-validation weights are loaded for test. These files match
+last training weights and are collected alongside reports. They are not complete
+training checkpoints: weights-only `--resume` is rejected for EF experiments.
+Use fresh runs for the seed-43 pair. The default legacy five-method sweep is
+unchanged; `run_fp16_followup.sh --phase full` selects only delta with/without EF.
+
 Eq is a per-rank local cast error, not global reduction error. For Allgather,
 `hat_delta = float32(float16(delta))`. For Allreduce with nonzero `p_i`,
 `hat_delta = float32(float16(p_i * delta)) / p_i`; Eq compares that to delta.

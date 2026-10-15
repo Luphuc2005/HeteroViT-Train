@@ -144,6 +144,9 @@ class MPITrainer(BaseTrainer):
         if self.comm_precision.startswith("fp16") and self.sync_mode not in ("local_sgd", "periodic_averaging"):
             raise ValueError("FP16 weight communication requires Local SGD")
         self.comm_collective = str(training_cfg.get("comm_collective", "allreduce")).lower()
+        self.comm_error_feedback = bool(training_cfg.get('comm_error_feedback', False))
+        if self.comm_error_feedback and self.comm_precision != 'fp16_delta_allgather':
+            raise ValueError('Error feedback requires fp16_delta_allgather')
         self.fp16_communicator = None
         if self.comm_precision == "fp16":
             from src.training.fp16_communicator import FP16Communicator
@@ -157,7 +160,11 @@ class MPITrainer(BaseTrainer):
         if self.comm_precision.startswith("fp16_delta_"):
             from src.training.fp16_delta_communicator import FP16DeltaCommunicator
             self.comm_collective = self.comm_precision[len("fp16_delta_"):]
-            self.delta_communicator = FP16DeltaCommunicator(
+            delta_class = FP16DeltaCommunicator
+            if self.comm_error_feedback:
+                from src.training.fp16_delta_ef_communicator import FP16DeltaEFCommunicator
+                delta_class = FP16DeltaEFCommunicator
+            self.delta_communicator = delta_class(
                 self.comm, self.comm_collective,
                 verify_reference=bool(training_cfg.get("comm_verify_reference", False)),
             )
@@ -2545,6 +2552,11 @@ class MPITrainer(BaseTrainer):
                 self._train_local_steps()
             else:
                 self._train_gradient_allreduce()
+            if self.comm_error_feedback:
+                # Save before final test can load best-validation weights.
+                # This matches last training weights, not the best checkpoint.
+                self.delta_communicator.save_state(os.path.join(
+                    self.logger.run_dir, f'fp16_ef_state_rank{self.rank}.npz'))
         finally:
             if self.agg_executor is not None:
                 self.agg_executor.shutdown(wait=False)

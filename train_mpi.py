@@ -392,6 +392,8 @@ if args.seed is not None:
     config["seed"] = int(args.seed)
 
 seed = int(config.get("seed", 42))
+if args.resume and config['training'].get('comm_error_feedback', False):
+    raise ValueError('EF experiments must start fresh: --resume restores weights only, not per-rank feedback and optimizer state')
 set_seed(seed)
 
 # Resolve resume settings on rank 0 and broadcast to all ranks
@@ -712,6 +714,10 @@ trainer = MPITrainer(
     start_epoch=resume_info["start_epoch"],
     best_val_accuracy=resume_info["best_val_accuracy"],
 )
+
+if bool(config.get('diagnostics', {}).get('fp16_same_inputs', False)):
+    from src.training.fp16_diagnostics import install_same_input_diagnostic
+    install_same_input_diagnostic(trainer)
 
 trainer.train()
 

@@ -60,6 +60,8 @@ class MPITrainer(BaseTrainer):
 
         self.best_val_accuracy = float(best_val_accuracy)
         training_cfg = config.get("training", {})
+        self.round_diagnostic_enabled = bool(config.get('logging', {}).get('round_diagnostic', False))
+        self.round_diagnostic = None
         rank_batch_sizes = training_cfg.get("rank_batch_sizes", None)
         if rank_batch_sizes is not None:
             self.rank_batch_sizes = [int(b) for b in rank_batch_sizes]
@@ -401,6 +403,29 @@ class MPITrainer(BaseTrainer):
         """Builds graph-compiled local gradient computation and weight application functions."""
         local_batch = self.local_batch_size
         accum_steps = self.accum_steps
+        timed_optimizer = self.round_diagnostic_enabled
+
+        def apply_local_optimizer(grads, optimizer, model):
+            if not timed_optimizer:
+                optimizer.apply_gradients(zip(grads, model.trainable_variables))
+                return None
+            dependencies = [g.values if isinstance(g, tf.IndexedSlices) else g
+                            for g in grads if g is not None]
+            with tf.control_dependencies(dependencies):
+                begin = tf.py_function(lambda: np.float64(time.perf_counter()), [], tf.float64)
+                begin.set_shape(())
+            graph = tf.compat.v1.get_default_graph()
+            previous = set(graph.get_operations())
+            with tf.control_dependencies([begin]):
+                optimizer.apply_gradients(zip(grads, model.trainable_variables))
+            # The experimental AdamW used here returns None. Fence its actual
+            # graph operations rather than timing Python graph construction or
+            # treating the iteration counter as proof all weight updates ended.
+            optimizer_ops = [op for op in graph.get_operations() if op not in previous]
+            with tf.control_dependencies(optimizer_ops):
+                end = tf.py_function(lambda: np.float64(time.perf_counter()), [], tf.float64)
+                end.set_shape(())
+            return (end - begin) * tf.constant(1000.0, tf.float64)
 
         if self.rank == 0 and self.strategy is not None:
             strategy = self.strategy
@@ -494,18 +519,23 @@ class MPITrainer(BaseTrainer):
                     per_example_loss = loss_fn(labels, predictions)
                     loss = tf.nn.compute_average_loss(per_example_loss, global_batch_size=local_batch)
                 grads = tape.gradient(loss, model.trainable_variables)
-                optimizer.apply_gradients(zip(grads, model.trainable_variables))
+                optimizer_ms = apply_local_optimizer(grads, optimizer, model)
                 pred_labels = tf.argmax(predictions, axis=-1, output_type=labels.dtype)
                 acc = tf.reduce_mean(tf.cast(tf.equal(pred_labels, labels), tf.float32))
-                return loss, acc
+                return (loss, acc, optimizer_ms) if timed_optimizer else (loss, acc)
 
             @tf.function
             def local_train_step(images, labels):
-                per_replica_losses, per_replica_accs = strategy.run(
+                replica_values = strategy.run(
                     replica_local_train_step, args=(images, labels)
                 )
+                per_replica_losses, per_replica_accs = replica_values[:2]
                 local_loss = strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses, axis=None)
                 local_acc = strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_accs, axis=None)
+                if timed_optimizer:
+                    local_optimizer_ms = tf.reduce_max(tf.stack(
+                        strategy.experimental_local_results(replica_values[2])))
+                    return local_loss, local_acc, local_optimizer_ms
                 return local_loss, local_acc
 
             self._compute_local_grads = compute_local_grads
@@ -563,10 +593,10 @@ class MPITrainer(BaseTrainer):
                     predictions = model(images, training=True)
                     loss = loss_fn(labels, predictions)
                 grads = tape.gradient(loss, model.trainable_variables)
-                optimizer.apply_gradients(zip(grads, model.trainable_variables))
+                optimizer_ms = apply_local_optimizer(grads, optimizer, model)
                 pred_labels = tf.argmax(predictions, axis=-1, output_type=labels.dtype)
                 acc = tf.reduce_mean(tf.cast(tf.equal(pred_labels, labels), tf.float32))
-                return loss, acc
+                return (loss, acc, optimizer_ms) if timed_optimizer else (loss, acc)
 
             self._compute_local_grads = compute_local_grads
             self._apply_global_grads = apply_global_grads
@@ -1613,6 +1643,13 @@ class MPITrainer(BaseTrainer):
         total_sync_time_accum = 0.0
         total_val_time_accum = 0.0
         total_overhead_time_accum = 0.0
+        if self.round_diagnostic_enabled:
+            if (self.comm_precision != 'fp32' or self.is_drift_adaptive
+                    or self.comm_error_feedback or self.dynamic_rebalance_enabled):
+                raise ValueError('Round diagnostic requires fixed FP32 Local SGD')
+            from src.training.round_diagnostic import RoundDiagnostic
+            self.round_diagnostic = RoundDiagnostic(self.comm, self.rank, self.logger.run_dir)
+            self.round_diagnostic.calibrate(epoch=0)
         train_start_time = time.perf_counter()
 
         if self.rank == 0 and getattr(self, "adaptive_structured_logger", None) is not None:
@@ -1649,11 +1686,15 @@ class MPITrainer(BaseTrainer):
             steps_since_sync = 0
             samples_since_sync = 0
             t_last_sync = time.perf_counter()
+            diagnostic_round_start = None
+            diagnostic_compute_ms = diagnostic_optimizer_ms = diagnostic_data_ms = 0.0
 
             train_iter = iter(self.dist_train_ds) if (self.dist_train_ds is not None and self.local_batch_size > 0) else None
 
             for step in range(1, self.steps_per_epoch + 1):
                 t_step_start = time.perf_counter()
+                if self.round_diagnostic is not None and diagnostic_round_start is None:
+                    diagnostic_round_start = t_step_start
                 total_steps_executed += 1
 
                 # 1. Fetch batch
@@ -1670,16 +1711,24 @@ class MPITrainer(BaseTrainer):
                 # 2. Local Train Step (Forward, Backward, Optimizer Update - STRICTLY LOCAL)
                 # NO gradient AllReduce across ranks. NO gradient accumulation.
                 if self.local_batch_size > 0 and images is not None:
-                    loss, acc = self._local_train_step(images, labels)
+                    values = self._local_train_step(images, labels)
+                    loss, acc = values[:2]
                     loss_val = float(loss)
                     acc_val = float(acc)
+                    step_optimizer_ms = float(values[2]) if self.round_diagnostic is not None else 0.0
                 else:
                     loss_val = 0.0
                     acc_val = 0.0
+                    step_optimizer_ms = 0.0
 
                 t_compute_end = time.perf_counter()
                 step_time = t_compute_end - t_step_start
                 epoch_compute_ms += (t_compute_end - t_fetch_end) * 1000.0
+                if self.round_diagnostic is not None:
+                    combined_ms = (t_compute_end - t_fetch_end) * 1000.0
+                    diagnostic_compute_ms += combined_ms
+                    diagnostic_optimizer_ms += step_optimizer_ms
+                    diagnostic_data_ms += (t_fetch_end - t_step_start) * 1000.0
                 t_wait_start = t_wait_end = t_model_sync_end = t_compute_end
                 total_train_loss += loss_val
                 total_train_acc += acc_val
@@ -1715,12 +1764,30 @@ class MPITrainer(BaseTrainer):
 
                     # Execute model parameter averaging (drift computed inside before overwrite)
                     do_verify = self.verify_sync_every_round or self.debug_sync or (is_epoch_end and self.verify_at_epoch_end)
+                    diagnostic_sync_enter = time.perf_counter() if self.round_diagnostic is not None else t_wait_end
                     sync_ms, max_div_l2, mean_div_l2, max_diff, comm_bytes, global_drift, drift_compute_time_sec, consensus_metrics = self.synchronize_model_weights(
                         policy=policy,
                         samples_since_sync=samples_since_sync,
                         verify_weights=do_verify,
                     )
                     t_model_sync_end = time.perf_counter()
+
+                    if self.round_diagnostic is not None:
+                        self.round_diagnostic.record_round(
+                            epoch=epoch, global_step=total_steps_executed, sync_round=total_comm_rounds,
+                            local_batch=self.local_batch_size, local_start_timestamp=diagnostic_round_start,
+                            local_done_timestamp=t_compute_end, gather_enter_timestamp=t_wait_start,
+                            gather_exit_timestamp=t_wait_end, sync_enter_timestamp=diagnostic_sync_enter,
+                            sync_exit_timestamp=t_model_sync_end,
+                            compute_ms=diagnostic_compute_ms - diagnostic_optimizer_ms,
+                            optimizer_ms=diagnostic_optimizer_ms,
+                            gather_ms=(t_wait_end - t_wait_start) * 1000.0,
+                            model_sync_ms=(t_model_sync_end - diagnostic_sync_enter) * 1000.0,
+                            samples_processed=samples_since_sync, local_steps=steps_since_sync,
+                            compute_optimizer_ms=diagnostic_compute_ms, data_ms=diagnostic_data_ms,
+                            round_elapsed_ms=(t_model_sync_end - diagnostic_round_start) * 1000.0)
+                        diagnostic_round_start = None
+                        diagnostic_compute_ms = diagnostic_optimizer_ms = diagnostic_data_ms = 0.0
 
                     round_duration = time.perf_counter() - t_last_sync
                     total_samples_since_sync = sum(rank_samples) if rank_samples else (samples_since_sync * self.world_size)
@@ -1956,6 +2023,10 @@ class MPITrainer(BaseTrainer):
             val_start_time = time.perf_counter()
             val_loss, val_acc = self.evaluate(self.dist_val_ds, val_steps_to_run)
             val_time = time.perf_counter() - val_start_time
+            if self.round_diagnostic is not None:
+                validation_done = time.perf_counter()
+                self.round_diagnostic.record_epoch(epoch, validation_done - train_start_time,
+                                                   val_acc, val_loss, validation_done)
             total_epoch_time = train_time + val_time
             total_val_time_accum += val_time
 
@@ -2025,6 +2096,9 @@ class MPITrainer(BaseTrainer):
             import gc
             gc.collect()
             self.comm.Barrier()
+
+            if self.round_diagnostic is not None:
+                self.round_diagnostic.calibrate(epoch=epoch)
 
             if self.max_steps is not None and total_steps_executed >= self.max_steps:
                 break

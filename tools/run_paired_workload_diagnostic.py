@@ -113,6 +113,8 @@ def collect(root, output, name, variant, workers):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=['prepare', 'smoke', 'all'], default='prepare')
+    parser.add_argument('--full-run', choices=['both', 'A_control', 'B_mild_rebalance'], default='both',
+                        help='Select full training runs; preflight and all smoke checks remain enabled.')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
@@ -124,6 +126,7 @@ def main():
         raise ValueError('Refusing to overwrite an existing experiment: ' + str(root))
     make_configs(repo, root / 'configs')
     (root / 'status.txt').write_text('prepared\n')
+    (root / 'run_selection.json').write_text(json.dumps(dict(full_run=args.full_run, phase=args.phase), indent=2) + '\n')
     print('PAIR_ROOT:', root, flush=True)
     if args.phase == 'prepare':
         return
@@ -202,15 +205,20 @@ def main():
             expected = yaml.safe_load((root / 'configs' / (variant + '.yaml')).read_text())
             frozen = yaml.safe_load((source / ('configs/mpi/paired_' + variant + '.yaml')).read_text())
             assert frozen == expected
-        for variant in ALLOCATIONS:  # A then B, exactly one full run each.
+        selected = list(ALLOCATIONS) if args.full_run == 'both' else [args.full_run]
+        for variant in selected:  # Default: A then B. Optional: one standalone repeat.
             name = 'paired_' + variant + '_fp32_h40_seed42_40e'
             run(source / ('configs/mpi/paired_' + variant + '.yaml'), name, root, variant)
             analyze_run(root, variant)
-        a = json.loads((root / 'A_control_analysis.json').read_text())
-        b = json.loads((root / 'B_mild_rebalance_analysis.json').read_text())
-        comparison_report(root, a, b)
+        if args.full_run == 'both':
+            a = json.loads((root / 'A_control_analysis.json').read_text())
+            b = json.loads((root / 'B_mild_rebalance_analysis.json').read_text())
+            comparison_report(root, a, b)
         (root / 'status.txt').write_text('completed\n')
-        print('REPORT:', root / 'paired_diagnostic_report_vi.md', flush=True)
+        if args.full_run == 'both':
+            print('REPORT:', root / 'paired_diagnostic_report_vi.md', flush=True)
+        else:
+            print('STANDALONE_ANALYSIS:', root / (args.full_run + '_analysis.json'), flush=True)
     except BaseException as error:
         (root / 'status.txt').write_text('failed: ' + repr(error) + '\n')
         raise

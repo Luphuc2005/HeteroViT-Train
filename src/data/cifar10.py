@@ -92,6 +92,7 @@ def build_cifar10_datasets(
     num_ranks: int = 1,
     drop_remainder: bool = False,
     rank_batch_sizes: Optional[List[int]] = None,
+    repeat: bool = False,
 ) -> Tuple[tf.data.Dataset, tf.data.Dataset, tf.data.Dataset, int, int]:
     """Prepares train, validation, and test tf.data pipelines for CIFAR-10.
 
@@ -167,6 +168,8 @@ def build_cifar10_datasets(
     if cache:
         train_ds = train_ds.cache()
     train_ds = train_ds.shuffle(buffer_size=min(num_train, 10000), seed=seed + rank)
+    if repeat:
+        train_ds = train_ds.repeat()
     train_ds = train_ds.map(train_aug, num_parallel_calls=tf.data.AUTOTUNE)
     train_ds = train_ds.batch(batch_size, drop_remainder=drop_remainder)
     train_ds = train_ds.prefetch(tf.data.AUTOTUNE)

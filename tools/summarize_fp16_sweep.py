@@ -127,4 +127,5 @@ if __name__ == '__main__':
     if args.check_configs:
         check_configs(args.root, args.methods)
     else:
-        summarize(args.root, args.methods)
+        from results_layout import resolve_result_path
+        summarize(resolve_result_path(args.root), args.methods)

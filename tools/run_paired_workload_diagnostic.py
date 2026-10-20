@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from paired_workload_analysis import ALLOCATIONS, analyze_run, comparison_report, read_csv
+from results_layout import find_result, result_group
 
 
 def execute(args, **kwargs):
@@ -73,7 +74,7 @@ def stage_source(repo, root):
         shutil.copy2(str(repo.parent / 'mpi_cluster' / name), str(cluster / name))
     expected_runtime = []
     for rank in range(5):
-        metadata = json.loads((repo / 'results/fp16_sweep_uydYAoMC/ranks/fp32' /
+        metadata = json.loads((find_result(repo, 'fp16_sweep_uydYAoMC') / 'ranks/fp32' /
                                ('rank%d' % rank) / 'metadata.json').read_text())
         expected_runtime.append(dict(rank=rank, host=metadata['hostname'],
                                      tensorflow=metadata['tensorflow_version'],
@@ -120,7 +121,7 @@ def main():
     repo = Path(__file__).resolve().parents[1]
     root = args.output.resolve() if args.output else Path(tempfile.mkdtemp(
         prefix='paired_workload_seed42_' + datetime.now(timezone(timedelta(hours=7))).strftime('%Y%m%d_%H%M%S') + '_',
-        dir=str(repo / 'results')))
+        dir=str(result_group(repo, '03_WORKLOAD_BALANCE_BATCH300'))))
     root.mkdir(parents=True, exist_ok=True)
     if (root / 'status.txt').exists():
         raise ValueError('Refusing to overwrite an existing experiment: ' + str(root))

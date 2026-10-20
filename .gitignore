@@ -82,3 +82,12 @@ validation/delta_20261012/*
 !validation/delta_20261012/README.md
 !validation/delta_20261012/summary.json
 !validation/delta_20261012/summarize.py
+
+# Validation execution traces and runtime audits
+validation/batch600_runtime_audit_20261019/
+
+# Experiment diagnostic notes, comparison audits, and temporary dumps
+docs/batch600_*
+docs/gpu_only_vs_cluster_*
+docs/run_batch600_*
+

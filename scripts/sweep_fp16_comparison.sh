@@ -87,8 +87,8 @@ if ((DRY_RUN)); then
   exit 0
 fi
 
-mkdir -p "$SOURCE_ROOT/results"
-SWEEP_DIR="$(mktemp -d "$SOURCE_ROOT/results/fp16_sweep_seed${SEED}_XXXXXXXX")"
+mkdir -p "$SOURCE_ROOT/results/00_BY_EXPERIMENT/07_EF_AND_DIAGNOSTICS"
+SWEEP_DIR="$(mktemp -d "$SOURCE_ROOT/results/00_BY_EXPERIMENT/07_EF_AND_DIAGNOSTICS/fp16_sweep_seed${SEED}_XXXXXXXX")"
 STAGE_DIR="$(mktemp -d /tmp/heterovit_fp16_sweep_XXXXXXXX)"
 export OUTPUT_DIR="$SWEEP_DIR/results"
 mkdir -p "$STAGE_DIR/cluster" "$OUTPUT_DIR" "$SWEEP_DIR/ranks"

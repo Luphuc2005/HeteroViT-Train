@@ -9,7 +9,12 @@ import glob
 import json
 import csv
 import re
+import sys
+from pathlib import Path
 from typing import Dict, Any, List
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+from results_layout import find_result, result_roots
 
 RESULTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results"))
 
@@ -105,14 +110,12 @@ def main():
     parser.add_argument("--all", action="store_true", help="Include archived verification runs")
     args = parser.parse_args()
 
-    candidate_dirs = [RESULTS_DIR]
+    repo = Path(RESULTS_DIR).parent
+    runs = [str(path) for path in result_roots(repo)]
     if args.all:
-        candidate_dirs.append(os.path.join(RESULTS_DIR, "archive", "audit_verification_1epoch"))
-
-    runs = []
-    for d in candidate_dirs:
-        if os.path.exists(d):
-            runs.extend(glob.glob(os.path.join(d, "*")))
+        archived = find_result(repo, 'archive') / 'audit_verification_1epoch'
+        if archived.exists():
+            runs.extend(str(path) for path in archived.iterdir())
     runs = sorted(runs, key=os.path.getmtime)
 
     data = []

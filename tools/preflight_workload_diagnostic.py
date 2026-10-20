@@ -1,4 +1,5 @@
 """Read-only five-node runtime/source/dataset preflight, outside timed training."""
+import argparse
 import hashlib
 import json
 import os
@@ -15,7 +16,10 @@ import tensorflow as tf
 import yaml
 
 root = Path(__file__).resolve().parents[1]
-config = yaml.safe_load((root / 'configs/mpi/paired_A_control.yaml').read_text())
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--config', type=Path, default=root / 'configs/mpi/paired_A_control.yaml')
+args = parser.parse_args()
+config = yaml.safe_load(args.config.read_text())
 data = Path(config['dataset']['data_dir'])
 source_files = ['train_mpi.py', 'src/training/trainer_mpi.py', 'src/training/base_trainer.py',
                 'src/data/cifar10.py', 'src/data/augmentation.py', 'src/training/round_diagnostic.py']

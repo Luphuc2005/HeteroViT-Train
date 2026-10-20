@@ -632,7 +632,13 @@ if rank == 0:
         print(f"  Sync Mode         : {sync_mode_str} (every step)", flush=True)
     print(f"  Global Batch Size : {global_batch} ({batch_detail})", flush=True)
     print(f"  Steps per Epoch   : {steps_per_epoch} (drop_remainder={drop_remainder})", flush=True)
-    print(f"  Sync Check Policy : Every {training_cfg.get('sync_interval', 20)} steps (tolerance: {sync_tolerance:.1e})", flush=True)
+    if sync_mode_str in ('local_sgd', 'periodic_averaging'):
+        every_round_check = bool(training_cfg.get('verify_sync_every_round', False) or training_cfg.get('debug', False)
+                                 or training_cfg.get('debug_sync_verification', False))
+        epoch_check = bool(training_cfg.get('verify_at_epoch_end', False))
+        print(f"  Weight Checks     : every_round={every_round_check}, epoch_end={epoch_check} (tolerance: {sync_tolerance:.1e})", flush=True)
+    else:
+        print(f"  Sync Check Policy : Every {training_cfg.get('sync_interval', 20)} steps (tolerance: {sync_tolerance:.1e})", flush=True)
     comm_backend_str = training_cfg.get("comm_backend", "allreduce")
     ps_threads_str = f" ({training_cfg.get('ps_agg_threads', 12)} aggregation threads)" if comm_backend_str in ("master_aggregation", "master_agg", "ps") else ""
     print(f"  Comm Backend      : {comm_backend_str}{ps_threads_str}", flush=True)

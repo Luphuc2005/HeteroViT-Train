@@ -16,6 +16,7 @@ import zipfile
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from results_layout import find_result, logical_parts, result_roots
 
 
 LOG_EXTENSIONS = {'.log', '.out', '.stderr', '.csv', '.json'}
@@ -52,6 +53,8 @@ def digest(path):
 
 def classify(relative):
     parts = Path(relative).parts
+    if parts[:2] == ('HeteroViT-MPI', 'results'):
+        parts = parts[:2] + logical_parts(Path(*parts[2:]))
     if len(parts) > 2 and parts[:2] == ('HeteroViT-MPI', 'results'):
         name = parts[2]
         if name in MAIN:
@@ -114,7 +117,8 @@ def inventory(workspace):
 def source_snapshots(workspace):
     entries, index = [], []
     repo = workspace / 'HeteroViT-MPI'
-    for marker in sorted((repo / 'results').glob('fp16_sweep*/source_stage.txt')):
+    for marker in sorted(p / 'source_stage.txt' for p in result_roots(repo)
+                         if p.name.startswith('fp16_sweep') and (p / 'source_stage.txt').exists()):
         source = Path(marker.read_text().strip())
         if not source.is_absolute() or source.parent != Path('/tmp'):
             raise ValueError('Unexpected source stage: ' + str(source))
@@ -144,7 +148,7 @@ def run_catalog(workspace):
     locations, catalog = [], []
     for path in sorted(root.rglob('train.csv')):
         relative = path.relative_to(workspace).as_posix()
-        parts = path.relative_to(root).parts
+        parts = logical_parts(path.relative_to(root))
         role, method = 'standalone_run_directory', path.parent.name
         if parts[0].startswith('fp16_sweep'):
             if 'ranks' in parts:
@@ -172,7 +176,7 @@ def run_catalog(workspace):
         log_path = path.parent / 'run.log'
         log = log_path.read_text(errors='replace') if log_path.exists() else ''
         summary = {}
-        summary_path = root / parts[0] / 'summary.csv'
+        summary_path = find_result(workspace / 'HeteroViT-MPI', parts[0]) / 'summary.csv'
         if role == 'canonical_rank0' and summary_path.exists():
             with summary_path.open(newline='') as handle:
                 summary = next((r for r in csv.DictReader(handle) if r['method'] == method), {})
@@ -200,7 +204,8 @@ def run_catalog(workspace):
             catalog.append(entry.copy())
     # Failed launchers without a train.csv remain visible in a separate list.
     failed = []
-    for path in sorted(root.glob('fp16_sweep*/status.txt')):
+    for path in sorted(p / 'status.txt' for p in result_roots(workspace / 'HeteroViT-MPI')
+                       if p.name.startswith('fp16_sweep') and (p / 'status.txt').exists()):
         status = path.read_text().strip()
         if status.startswith('failed'):
             failed.append(dict(directory='workspace/' + path.parent.relative_to(workspace).as_posix(), status=status))
@@ -362,7 +367,7 @@ Thời điểm snapshot (Việt Nam): **{time}**. Giữ nguyên đường dẫn 
 
 ## Phạm vi và tính đầy đủ
 
-Gói lấy toàn bộ file đủ điều kiện hiện có trong workspace này, kể cả logs/, HeteroViT-MPI/logs/, results/archive/, validation/, profiles/, docs/, reports/, plots/, source/config/scripts và mpi_cluster/. Thêm source snapshots /tmp được tham chiếu bởi chín sweep khi còn tồn tại. Không SSH lấy thêm log ở máy khác và không có nghĩa toàn bộ lịch sử cụm đều đã được collect về máy này.
+Gói lấy toàn bộ file đủ điều kiện hiện có trong workspace này, kể cả logs/, HeteroViT-MPI/logs/, results/00_BY_EXPERIMENT/99_ARCHIVE/archive/, validation/, profiles/, docs/, reports/, plots/, source/config/scripts và mpi_cluster/. Thêm source snapshots /tmp được tham chiếu bởi chín sweep khi còn tồn tại. Không SSH lấy thêm log ở máy khác và không có nghĩa toàn bộ lịch sử cụm đều đã được collect về máy này.
 
 Dataset, model weights/checkpoints, Git/auth/session directories, caches và runtime binaries không phải log nên loại theo danh mục. **EF NPZ communication states được giữ**; chúng không đủ để resume optimizer/RNG/dataloader. Các symlink config trỏ bên trong workspace được đóng thành file thường để dễ giải nén; external CUDA symlink bị loại.
 

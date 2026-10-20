@@ -7,6 +7,8 @@ analysis interpolates the saved root-minus-local clock corrections.
 import csv
 import json
 import time
+import socket
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -21,7 +23,7 @@ class RoundDiagnostic:
         'data_ms', 'round_elapsed_ms',
     ]
 
-    def __init__(self, comm, rank, run_dir, probes=9):
+    def __init__(self, comm, rank, run_dir, probes=9, detailed=False):
         self.comm, self.rank = comm, rank
         self.size = comm.Get_size()
         self.path = Path(run_dir)
@@ -31,6 +33,32 @@ class RoundDiagnostic:
         self.calibrations = []
         self.calibration_elapsed_seconds = 0.0
         self.write_elapsed_seconds = 0.0
+        self.detailed = detailed
+        self.host = socket.gethostname()
+        self.stage_events = []
+        self.sync_traces = []
+
+    @contextmanager
+    def stage(self, name, epoch):
+        """Local host timing only: no MPI calls, barriers or device synchronization."""
+        if not self.detailed:
+            yield
+            return
+        begin = time.perf_counter()
+        try:
+            yield
+        finally:
+            end = time.perf_counter()
+            self.record_stage(name, epoch, begin, end)
+
+    def record_stage(self, name, epoch, begin, end):
+        if self.detailed:
+            self.stage_events.append(dict(epoch=epoch, rank=self.rank, host=self.host, stage=name,
+                stage_begin=begin, stage_end=end, elapsed_ms=(end - begin) * 1000))
+
+    def record_sync_trace(self, **row):
+        if self.detailed:
+            self.sync_traces.append(dict(rank=self.rank, host=self.host, **row))
 
     def calibrate(self, epoch):
         """NTP-style four timestamps, minimum network-delay sample per peer.
@@ -99,8 +127,18 @@ class RoundDiagnostic:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             writer.writerows(self.epochs)
+        if self.detailed:
+            for name, records in [('runtime_stages', self.stage_events), ('sync_trace', self.sync_traces)]:
+                if records:
+                    fields = list(dict.fromkeys(key for row in records for key in row))
+                    with (self.path / ('%s_rank%d.csv' % (name, self.rank))).open('w', newline='') as handle:
+                        writer = csv.DictWriter(handle, fieldnames=fields)
+                        writer.writeheader()
+                        writer.writerows(records)
         metadata = dict(
             timestamp_clock='time.perf_counter, raw local seconds', reference_rank=0,
+            runtime_stage_trace=self.detailed,
+            optimizer_class=getattr(self, 'optimizer_class', 'UNKNOWN / NOT RECORDED'),
             alignment='piecewise linear root-minus-local offsets using adjacent epoch markers',
             calibration_probes=self.probes, calibration_elapsed_seconds=self.calibration_elapsed_seconds,
             write_elapsed_seconds_before_this_flush=self.write_elapsed_seconds,

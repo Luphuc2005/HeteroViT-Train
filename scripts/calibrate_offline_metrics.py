@@ -20,10 +20,10 @@ def analyze_historical_runs():
     print("=" * 80)
 
     fixed_runs = {
-        "H=40": "results/local_sgd_h40_300_40e_20261007_105137/local_sgd_timeline.csv",
-        "H=80": "results/local_sgd_h80_300_40e_20261007_150351/local_sgd_timeline.csv",
-        "H=120": "results/local_sgd_h120_300_40e_20261007_154455/local_sgd_timeline.csv",
-        "H=150": "results/local_sgd_h150_300_40e_20261007_162734/local_sgd_timeline.csv",
+        "H=40": "results/00_BY_EXPERIMENT/05_LOCAL_SGD_H_SWEEPS/local_sgd_h40_300_40e_20261007_105137/local_sgd_timeline.csv",
+        "H=80": "results/00_BY_EXPERIMENT/05_LOCAL_SGD_H_SWEEPS/local_sgd_h80_300_40e_20261007_150351/local_sgd_timeline.csv",
+        "H=120": "results/00_BY_EXPERIMENT/05_LOCAL_SGD_H_SWEEPS/local_sgd_h120_300_40e_20261007_154455/local_sgd_timeline.csv",
+        "H=150": "results/00_BY_EXPERIMENT/05_LOCAL_SGD_H_SWEEPS/local_sgd_h150_300_40e_20261007_162734/local_sgd_timeline.csv",
     }
 
     summary = []

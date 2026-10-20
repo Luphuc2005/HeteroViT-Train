@@ -15,6 +15,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 
 import yaml
+from results_layout import resolve_result_path, result_group
 
 
 BASE = 'local_sgd_h40_fp32_2gpu_only_300_40e'
@@ -49,6 +50,7 @@ def read_csv(path):
 
 
 def summarize(run_dir, seed, launcher_text):
+    run_dir = resolve_result_path(run_dir)
     epochs = read_csv(run_dir / 'train.csv')
     elapsed = read_csv(run_dir / 'epoch_elapsed_rank0.csv')
     rounds = read_csv(run_dir / 'round_diagnostic_rank0.csv')
@@ -102,7 +104,7 @@ def main():
         except BlockingIOError:
             raise RuntimeError('Another experiment holds the cluster lock; no training started')
         stamp = datetime.now(timezone(timedelta(hours=7))).strftime('%Y%m%d_%H%M%S')
-        root = Path(tempfile.mkdtemp(prefix='gpu_only_seed43_44_' + stamp + '_', dir=str(repo / 'results')))
+        root = Path(tempfile.mkdtemp(prefix='gpu_only_seed43_44_' + stamp + '_', dir=str(result_group(repo, '01_GPU_ONLY_BATCH300'))))
         print('SWEEP_ROOT:', root, flush=True)
         status = root / 'status.txt'
         status.write_text('prepared\n')

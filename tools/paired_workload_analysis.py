@@ -8,6 +8,7 @@ import re
 import statistics
 from collections import Counter
 from pathlib import Path
+from results_layout import resolve_result_path
 
 
 ALLOCATIONS = {'A_control': [266, 6, 6, 6, 16], 'B_mild_rebalance': [266, 6, 5, 5, 18]}
@@ -291,6 +292,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('root', type=Path)
     args = parser.parse_args()
+    args.root = resolve_result_path(args.root)
     a = analyze_run(args.root, 'A_control')
     b = analyze_run(args.root, 'B_mild_rebalance')
     comparison_report(args.root, a, b)

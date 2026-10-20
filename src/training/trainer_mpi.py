@@ -8,6 +8,7 @@ Supports:
 """
 import os
 import time
+from contextlib import nullcontext
 import csv
 import concurrent.futures
 from typing import Dict, Any, Optional, List, Tuple
@@ -62,6 +63,15 @@ class MPITrainer(BaseTrainer):
         training_cfg = config.get("training", {})
         self.round_diagnostic_enabled = bool(config.get('logging', {}).get('round_diagnostic', False))
         self.round_diagnostic = None
+        self.runtime_stage_trace_enabled = bool(config.get('logging', {}).get('runtime_stage_trace', False))
+        if self.runtime_stage_trace_enabled and not self.round_diagnostic_enabled:
+            raise ValueError('runtime_stage_trace requires round_diagnostic for clock calibration')
+        if self.runtime_stage_trace_enabled and (
+                training_cfg.get('sync_mode') not in ('local_sgd', 'periodic_averaging')
+                or training_cfg.get('comm_precision', 'fp32') != 'fp32'
+                or training_cfg.get('avg_policy', 'sample_weighted') != 'sample_weighted'):
+            raise ValueError('runtime_stage_trace supports FP32 sample-weighted Local SGD only')
+        self.last_sync_detail = None
         rank_batch_sizes = training_cfg.get("rank_batch_sizes", None)
         if rank_batch_sizes is not None:
             self.rank_batch_sizes = [int(b) for b in rank_batch_sizes]
@@ -1200,6 +1210,10 @@ class MPITrainer(BaseTrainer):
         # 1. Flatten current local model weights into 1D float32 array
         local_weights = self.model.get_weights()
         flat_w = np.concatenate([w.ravel() for w in local_weights]).astype(np.float32)
+        detail = {} if self.runtime_stage_trace_enabled else None
+        if detail is not None:
+            detail['core_sync_enter'] = t_sync_start
+            detail['get_flatten_exit'] = time.perf_counter()
         # 2. Compute consensus weights W_global according to precision mode
         if self.delta_communicator is not None:
             global_flat_w, total_samples, comm_stats = self.delta_communicator.synchronize(
@@ -1225,8 +1239,15 @@ class MPITrainer(BaseTrainer):
                 n_i = float(max(0, samples_since_sync))
                 weighted_flat_w = flat_w * n_i
                 sum_weighted = np.empty_like(weighted_flat_w)
+                if detail is not None:
+                    detail['collective_enter'] = time.perf_counter()
                 self.comm.Allreduce(weighted_flat_w, sum_weighted, op=MPI.SUM)
+                if detail is not None:
+                    detail['collective_exit'] = time.perf_counter()
+                    detail['sample_scalar_enter'] = time.perf_counter()
                 total_samples = float(self.comm.allreduce(n_i, op=MPI.SUM))
+                if detail is not None:
+                    detail['sample_scalar_exit'] = time.perf_counter()
                 if total_samples > 0.0:
                     global_flat_w = sum_weighted / total_samples
                 else:
@@ -1240,14 +1261,26 @@ class MPITrainer(BaseTrainer):
                 total_samples = float(samples_since_sync * self.world_size)
             else:
                 raise ValueError(f"Unknown averaging policy: '{policy}'. Supported: 'sample_weighted', 'uniform'")
-            comm_stats["communication_ms"] = (time.perf_counter() - t_comm) * 1000.0
+            comm_interval_end = time.perf_counter()
+            comm_stats["communication_ms"] = (comm_interval_end - t_comm) * 1000.0
+            if detail is not None:
+                detail['communication_interval_enter'] = t_comm
+                detail['communication_interval_exit'] = comm_interval_end
 
         communicated_bytes = comm_stats["payload_bytes"]
 
         # 3. Compute local model divergence (L2 drift) before replacing weights
         local_div = float(np.linalg.norm(flat_w - global_flat_w))
+        if detail is not None:
+            detail['divergence_local_exit'] = time.perf_counter()
+            detail['divergence_max_enter'] = time.perf_counter()
         max_divergence_l2 = float(self.comm.allreduce(local_div, op=MPI.MAX))
+        if detail is not None:
+            detail['divergence_max_exit'] = time.perf_counter()
+            detail['divergence_sum_enter'] = time.perf_counter()
         sum_div = float(self.comm.allreduce(local_div, op=MPI.SUM))
+        if detail is not None:
+            detail['divergence_sum_exit'] = time.perf_counter()
         mean_divergence_l2 = sum_div / float(self.world_size)
 
         # Compute normalized drift D_t and consensus metrics (V_t, Q_t, M_t) BEFORE model overwrite
@@ -1279,6 +1312,8 @@ class MPITrainer(BaseTrainer):
             drift_compute_time_sec = time.perf_counter() - t_drift_start
 
         # 4. Unpack global weights and update local model
+        if detail is not None:
+            detail['reconstruct_enter'] = time.perf_counter()
         w_global = []
         offset = 0
         for w in local_weights:
@@ -1286,7 +1321,11 @@ class MPITrainer(BaseTrainer):
             chunk = global_flat_w[offset:offset + size].reshape(w.shape).astype(w.dtype)
             w_global.append(chunk)
             offset += size
+        if detail is not None:
+            detail['set_weights_enter'] = time.perf_counter()
         self.model.set_weights(w_global)
+        if detail is not None:
+            detail['set_weights_exit'] = time.perf_counter()
 
         # 5. Verify weight consistency across all ranks (only when explicitly requested)
         if verify_weights:
@@ -1311,6 +1350,9 @@ class MPITrainer(BaseTrainer):
             max_weight_diff = 0.0
 
         sync_time_ms = (time.perf_counter() - t_sync_start) * 1000.0
+        if detail is not None:
+            detail['core_sync_exit'] = t_sync_start + sync_time_ms / 1000
+        self.last_sync_detail = detail
         comm_stats["total_sync_ms"] = sync_time_ms
         if self.delta_communicator is not None:
             comm_stats["sync_total_ms"] = sync_time_ms
@@ -1592,6 +1634,11 @@ class MPITrainer(BaseTrainer):
                     0.0, 0.0, 0.0, 0.0,
                 ])
 
+    def _runtime_stage(self, name, epoch):
+        if self.round_diagnostic is not None:
+            return self.round_diagnostic.stage(name, epoch)
+        return nullcontext()
+
     def _train_local_sgd(self):
         """Executes Fixed Local SGD / Periodic Model Parameter Averaging training loop.
 
@@ -1648,7 +1695,9 @@ class MPITrainer(BaseTrainer):
                     or self.comm_error_feedback or self.dynamic_rebalance_enabled):
                 raise ValueError('Round diagnostic requires fixed FP32 Local SGD')
             from src.training.round_diagnostic import RoundDiagnostic
-            self.round_diagnostic = RoundDiagnostic(self.comm, self.rank, self.logger.run_dir)
+            self.round_diagnostic = RoundDiagnostic(self.comm, self.rank, self.logger.run_dir,
+                                                    detailed=self.runtime_stage_trace_enabled)
+            self.round_diagnostic.optimizer_class = type(self.optimizer).__module__ + '.' + type(self.optimizer).__name__
             self.round_diagnostic.calibrate(epoch=0)
         train_start_time = time.perf_counter()
 
@@ -1689,7 +1738,8 @@ class MPITrainer(BaseTrainer):
             diagnostic_round_start = None
             diagnostic_compute_ms = diagnostic_optimizer_ms = diagnostic_data_ms = 0.0
 
-            train_iter = iter(self.dist_train_ds) if (self.dist_train_ds is not None and self.local_batch_size > 0) else None
+            with self._runtime_stage('iterator_create', epoch):
+                train_iter = iter(self.dist_train_ds) if (self.dist_train_ds is not None and self.local_batch_size > 0) else None
 
             for step in range(1, self.steps_per_epoch + 1):
                 t_step_start = time.perf_counter()
@@ -1786,6 +1836,20 @@ class MPITrainer(BaseTrainer):
                             samples_processed=samples_since_sync, local_steps=steps_since_sync,
                             compute_optimizer_ms=diagnostic_compute_ms, data_ms=diagnostic_data_ms,
                             round_elapsed_ms=(t_model_sync_end - diagnostic_round_start) * 1000.0)
+                        if self.runtime_stage_trace_enabled:
+                            detail = self.last_sync_detail
+                            self.round_diagnostic.record_sync_trace(
+                                epoch=epoch, global_step=total_steps_executed, sync_round=total_comm_rounds,
+                                local_batch=self.local_batch_size, block_start=diagnostic_round_start,
+                                compute_end=t_compute_end, gather_enter=t_wait_start, gather_exit=t_wait_end,
+                                sync_enter=diagnostic_sync_enter, sync_end=t_model_sync_end,
+                                compute_ms=diagnostic_compute_ms - diagnostic_optimizer_ms,
+                                compute_optimizer_ms=diagnostic_compute_ms, optimizer_ms=diagnostic_optimizer_ms,
+                                data_ms=diagnostic_data_ms, gather_ms=(t_wait_end - t_wait_start) * 1000,
+                                pre_collective_elapsed_ms=(detail['collective_enter'] - t_compute_end) * 1000,
+                                collective_ms=(detail['collective_exit'] - detail['collective_enter']) * 1000,
+                                post_collective_ms=(t_model_sync_end - detail['collective_exit']) * 1000,
+                                **detail)
                         diagnostic_round_start = None
                         diagnostic_compute_ms = diagnostic_optimizer_ms = diagnostic_data_ms = 0.0
 
@@ -2021,7 +2085,8 @@ class MPITrainer(BaseTrainer):
             # 5. Validation phase (Weights are guaranteed synchronized!)
             val_steps_to_run = min(2, self.val_steps) if (self.max_steps is not None and self.max_steps <= 50) else self.val_steps
             val_start_time = time.perf_counter()
-            val_loss, val_acc = self.evaluate(self.dist_val_ds, val_steps_to_run)
+            with self._runtime_stage('validation', epoch):
+                val_loss, val_acc = self.evaluate(self.dist_val_ds, val_steps_to_run)
             val_time = time.perf_counter() - val_start_time
             if self.round_diagnostic is not None:
                 validation_done = time.perf_counter()
@@ -2034,9 +2099,12 @@ class MPITrainer(BaseTrainer):
                 is_best = val_acc > self.best_val_accuracy
                 if is_best:
                     self.best_val_accuracy = val_acc
-                    self.save_checkpoint("best.weights.h5")
-                self.save_checkpoint("last.weights.h5")
+                    with self._runtime_stage('checkpoint_best', epoch):
+                        self.save_checkpoint("best.weights.h5")
+                with self._runtime_stage('checkpoint_last', epoch):
+                    self.save_checkpoint("last.weights.h5")
 
+                epoch_log_begin = time.perf_counter() if self.runtime_stage_trace_enabled else None
                 try:
                     curr_lr = float(self.optimizer.learning_rate.numpy())
                 except Exception:
@@ -2085,25 +2153,36 @@ class MPITrainer(BaseTrainer):
                         total_overhead_sec=total_overhead_time_accum,
                     )
 
+                if epoch_log_begin is not None:
+                    self.round_diagnostic.record_stage('epoch_metrics_logging', epoch,
+                                                       epoch_log_begin, time.perf_counter())
+
             # Log CPU, RAM, and GPU VRAM utilization across all cluster nodes
-            self.log_cluster_resources(epoch, local_sgd_timing={
-                "batch_size": self.local_batch_size,
-                "local_loss": avg_train_loss, "local_acc": avg_train_acc,
-                "compute_ms": epoch_compute_ms, "wait_ms": epoch_wait_ms,
-                "train_ms": train_time * 1000.0,
-            })
+            with self._runtime_stage('resources_collect_and_gather', epoch):
+                self.log_cluster_resources(epoch, local_sgd_timing={
+                    "batch_size": self.local_batch_size,
+                    "local_loss": avg_train_loss, "local_acc": avg_train_acc,
+                    "compute_ms": epoch_compute_ms, "wait_ms": epoch_wait_ms,
+                    "train_ms": train_time * 1000.0,
+                })
 
             import gc
-            gc.collect()
-            self.comm.Barrier()
+            with self._runtime_stage('garbage_collect', epoch):
+                gc.collect()
+            with self._runtime_stage('existing_epoch_barrier', epoch):
+                self.comm.Barrier()
 
             if self.round_diagnostic is not None:
-                self.round_diagnostic.calibrate(epoch=epoch)
+                with self._runtime_stage('clock_calibration_and_flush', epoch):
+                    self.round_diagnostic.calibrate(epoch=epoch)
 
             if self.max_steps is not None and total_steps_executed >= self.max_steps:
                 break
 
         self.total_train_time = time.perf_counter() - train_start_time
+        if self.round_diagnostic is not None and self.runtime_stage_trace_enabled:
+            # Persist the last calibration stage after ending the loop timer.
+            self.round_diagnostic.flush()
         if self.rank == 0:
             self.logger.info(
                 f"MPI Local SGD Training finished in {self.total_train_time:.2f}s "

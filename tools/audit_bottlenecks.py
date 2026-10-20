@@ -14,6 +14,7 @@ from collections import Counter
 from pathlib import Path
 
 from summarize_fp16_sweep import communication_rows
+from results_layout import find_result
 
 
 SWEEPS = [
@@ -43,7 +44,7 @@ def close(actual, expected, context, tolerance=0.02):
 
 def audit_run(repo, sweep, seed, summary, paired=False):
     method = summary['method']
-    base = repo / 'results' / sweep
+    base = find_result(repo, sweep)
     log_path = base / (method + '.log')
     log = log_path.read_text(errors='replace')
     completion = re.findall(r'MPI Local SGD Training finished in ([\d.]+)s', log)
@@ -168,7 +169,7 @@ def audit(repo):
     runs = []
     for seed, sweep in SWEEPS + [(43, 'fp16_sweep_seed43_2tyCNQ2H')]:
         paired = sweep == 'fp16_sweep_seed43_2tyCNQ2H'
-        for summary in rows(repo / 'results' / sweep / 'summary.csv'):
+        for summary in rows(find_result(repo, sweep) / 'summary.csv'):
             runs.append(audit_run(repo, sweep, seed, summary, paired))
     aggregates = []
     for method in dict.fromkeys(r['method'] for r in runs if not r['paired']):
@@ -197,7 +198,7 @@ def audit(repo):
     fp32 = next(a for a in aggregates if a['method'] == 'fp32')
     for a in aggregates:
         a['loop_time_reduction_vs_fp32_percent'] = 100 * (1 - a['loop_mean_seconds'] / fp32['loop_mean_seconds'])
-    legacy_base = repo / 'results/allreduce_baseline_300_20e_20261006_153923'
+    legacy_base = find_result(repo, 'allreduce_baseline_300_20e_20261006_153923')
     legacy_trace = [r for r in rows(legacy_base / 'step_timing_breakdown.csv') if int(r['rank']) == 0]
     legacy = dict(source=str(legacy_base.relative_to(repo)), rank0_steps=len(legacy_trace),
                   rank0_totals={k.replace('_ms', '_seconds'): sum(float(r[k]) for r in legacy_trace) / 1000

@@ -1407,6 +1407,7 @@ class MPITrainer(BaseTrainer):
         total_rounds_executed = 0
         train_start_time = time.perf_counter()
 
+        train_iter = None
         for epoch in range(self.start_epoch, self.epochs + 1):
             epoch_start_time = time.perf_counter()
             total_train_loss = 0.0
@@ -1414,7 +1415,11 @@ class MPITrainer(BaseTrainer):
             round_in_epoch = 0
             step_in_epoch = 0
 
-            train_iter = iter(self.dist_train_ds)
+            if getattr(self, "train_iter_needs_reset", False):
+                train_iter = None
+                self.train_iter_needs_reset = False
+            if train_iter is None and (self.dist_train_ds is not None and self.local_batch_size > 0):
+                train_iter = iter(self.dist_train_ds)
 
             while step_in_epoch < self.steps_per_epoch:
                 round_in_epoch += 1
@@ -1597,6 +1602,10 @@ class MPITrainer(BaseTrainer):
 
             if self.max_steps is not None and total_steps_executed >= self.max_steps:
                 break
+
+        train_iter = None
+        import gc
+        gc.collect()
 
         self.total_train_time = time.perf_counter() - train_start_time
         if self.rank == 0:
@@ -2187,6 +2196,10 @@ class MPITrainer(BaseTrainer):
             if self.max_steps is not None and total_steps_executed >= self.max_steps:
                 break
 
+        train_iter = None
+        import gc
+        gc.collect()
+
         self.total_train_time = time.perf_counter() - train_start_time
         if self.round_diagnostic is not None and self.runtime_stage_trace_enabled:
             # Persist the last calibration stage after ending the loop timer.
@@ -2222,6 +2235,7 @@ class MPITrainer(BaseTrainer):
         total_steps_executed = (self.start_epoch - 1) * self.steps_per_epoch if self.start_epoch > 1 else 0
         train_start_time = time.perf_counter()
 
+        train_iter = None
         for epoch in range(self.start_epoch, self.epochs + 1):
             epoch_start_time = time.perf_counter()
             total_train_loss = 0.0
@@ -2229,7 +2243,11 @@ class MPITrainer(BaseTrainer):
             total_compute_time = 0.0
             step_count = 0
 
-            train_iter = iter(self.dist_train_ds) if (self.dist_train_ds is not None and self.local_batch_size > 0) else None
+            if getattr(self, "train_iter_needs_reset", False):
+                train_iter = None
+                self.train_iter_needs_reset = False
+            if train_iter is None and (self.dist_train_ds is not None and self.local_batch_size > 0):
+                train_iter = iter(self.dist_train_ds)
 
             for step in range(1, self.steps_per_epoch + 1):
                 step_start_time = time.perf_counter()
@@ -2676,6 +2694,10 @@ class MPITrainer(BaseTrainer):
 
             if self.max_steps is not None and total_steps_executed >= self.max_steps:
                 break
+
+        train_iter = None
+        import gc
+        gc.collect()
 
         self.total_train_time = time.perf_counter() - train_start_time
         if self.rank == 0:

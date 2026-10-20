@@ -407,6 +407,7 @@ class MPITrainer(BaseTrainer):
             self.dist_val_ds = self.val_ds
 
         self._setup_step_functions()
+        self.train_iter_needs_reset = True
         self._init_comm_backend()
 
     def _setup_step_functions(self):
@@ -651,6 +652,7 @@ class MPITrainer(BaseTrainer):
                 num_ranks=self.world_size,
                 drop_remainder=drop_remainder,
                 rank_batch_sizes=self.rank_batch_sizes,
+                repeat=bool(self.config.get("training", {}).get("repeat_dataset", True)),
             )
             self.train_ds = train_ds
             if self.rank == 0 and self.strategy is not None:
@@ -664,6 +666,7 @@ class MPITrainer(BaseTrainer):
             self.steps_per_epoch = 45000 // max(self.global_batch_size, 1)
 
         self._setup_step_functions()
+        self.train_iter_needs_reset = True
 
     def _init_comm_backend(self):
         """Initializes gradient communication structures and thread pool."""
@@ -1723,6 +1726,7 @@ class MPITrainer(BaseTrainer):
             }
             self.adaptive_structured_logger.save_run_metadata(run_meta)
 
+        train_iter = None
         for epoch in range(self.start_epoch, self.epochs + 1):
             epoch_start_time = time.perf_counter()
             total_train_loss = 0.0
@@ -1739,7 +1743,11 @@ class MPITrainer(BaseTrainer):
             diagnostic_compute_ms = diagnostic_optimizer_ms = diagnostic_data_ms = 0.0
 
             with self._runtime_stage('iterator_create', epoch):
-                train_iter = iter(self.dist_train_ds) if (self.dist_train_ds is not None and self.local_batch_size > 0) else None
+                if getattr(self, "train_iter_needs_reset", False):
+                    train_iter = None
+                    self.train_iter_needs_reset = False
+                if train_iter is None and (self.dist_train_ds is not None and self.local_batch_size > 0):
+                    train_iter = iter(self.dist_train_ds)
 
             for step in range(1, self.steps_per_epoch + 1):
                 t_step_start = time.perf_counter()

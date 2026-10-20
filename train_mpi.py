@@ -570,6 +570,7 @@ try:
         num_ranks=world_size,
         drop_remainder=drop_remainder,
         rank_batch_sizes=rank_batch_sizes,
+        repeat=bool(training_cfg.get("repeat_dataset", True)),
     )
 except FileNotFoundError as err:
     print(f"[rank {rank}] Dataset initialization failed: {err}", flush=True)

@@ -1,0 +1,58 @@
+# Batch600, H40, Baseline allocation: [532, 12, 12, 12, 32]
+# Syncs per epoch: 2 (at step 40 and step 75), total 80 syncs for 40 epochs.
+experiment:
+  name: local_sgd_h40_fp32_cluster5_600_40e_seed42
+mode: mpi
+seed: 42
+dataset:
+  name: cifar10
+  data_dir: /home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/data/cifar10
+  num_classes: 10
+model:
+  name: vit_tiny
+  image_size: 32
+  patch_size: 4
+  embed_dim: 192
+  depth: 6
+  num_heads: 3
+  mlp_dim: 768
+  dropout: 0.1
+training:
+  comm_precision: fp32
+  epochs: 40
+  global_batch_size: 600
+  auto_balance: false
+  rank_batch_sizes:
+  - 532
+  - 12
+  - 12
+  - 12
+  - 32
+  sync_mode: local_sgd
+  local_sgd_h: 40
+  avg_policy: sample_weighted
+  optimizer_state_sync: preserve_local
+  grad_accum:
+    enabled: false
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  sync_interval: 40
+  sync_tolerance: 1.0e-05
+  drop_remainder: true
+  repeat_dataset: true
+cpu:
+  intra_op_threads: 4
+  inter_op_threads: 2
+gpu:
+  num_gpus: 2
+  devices:
+  - /GPU:0
+  - /GPU:1
+  strategy: mirrored
+  memory_growth: true
+logging:
+  log_interval: 10
+  output_dir: /home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results
+  round_diagnostic: true
+

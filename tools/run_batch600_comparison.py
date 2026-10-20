@@ -23,12 +23,15 @@ ALLOCATIONS = {
     'gpu_only': [600],
     'cluster5': [532, 12, 12, 12, 32],
     'cluster5_rebalanced': [544, 12, 6, 6, 32],
+    'cluster5_rebalanced_fp16_delta': [544, 12, 6, 6, 32],
 }
 
 
 def config_name(variant):
     if variant == 'cluster5_rebalanced':
         return 'local_sgd_h20_fp32_cluster5_rebalance_600_40e.yaml'
+    if variant == 'cluster5_rebalanced_fp16_delta':
+        return 'local_sgd_h20_fp16_delta_allgather_cluster5_rebalance_600_40e.yaml'
     return 'local_sgd_h20_fp32_%s_600_40e.yaml' % variant
 
 
@@ -45,8 +48,12 @@ def validate_configs(repo):
         for key in ['global_batch_size', 'rank_batch_sizes', 'local_sgd_h']:
             normalized['training'][key] = base['training'][key]
         normalized['training'].pop('repeat_dataset', None)
+        normalized['training'].pop('comm_precision', None)
+        normalized['training'].pop('comm_collective', None)
         base_norm = copy.deepcopy(base)
         base_norm['training'].pop('repeat_dataset', None)
+        base_norm['training'].pop('comm_precision', None)
+        base_norm['training'].pop('comm_collective', None)
         assert normalized == base_norm, 'Unexpected recipe change: ' + variant
         configs[variant] = config
     print('CONFIG PASS: batch600; H20; seed42; LR0.001; 75 steps/epoch; windows20/20/20/15.', flush=True)
@@ -123,7 +130,7 @@ def summarize(root, variant, epochs, run_dir, allocation, log_text):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--epochs', type=int, choices=[3, 5, 10, 40], default=3)
-    parser.add_argument('--variant', choices=['both', 'gpu_only', 'cluster5', 'cluster5_rebalanced'], default='both')
+    parser.add_argument('--variant', choices=['both', 'gpu_only', 'cluster5', 'cluster5_rebalanced', 'cluster5_rebalanced_fp16_delta'], default='both')
     parser.add_argument('--runtime-stage-trace', action='store_true', help='Buffer per-call MPI timestamps and epoch phase timings; no new collectives.')
     parser.add_argument('--check-only', action='store_true')
     args = parser.parse_args()

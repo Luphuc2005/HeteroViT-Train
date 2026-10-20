@@ -39,6 +39,7 @@ training:
   sync_interval: 20
   sync_tolerance: 1.0e-05
   drop_remainder: true
+  repeat_dataset: true
 cpu:
   intra_op_threads: 4
   inter_op_threads: 2

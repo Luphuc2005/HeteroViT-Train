@@ -7,6 +7,9 @@ MPI_CLUSTER_DIR="$(cd "$PROJECT_ROOT/mpi_cluster" && pwd)"
 CONFIG="$SCRIPT_DIR/../configs/mpi/local_sgd_h20_fp32_cluster5_rebalance_600_40e.yaml"
 LOG_FILE="$PROJECT_ROOT/HeteroViT-MPI/train_23_cluster5_b600_h20_rebalance.log"
 
+source /home/icip/Ha/myenv/bin/activate
+export PYTHONNOUSERSITE=1
+
 EPOCHS="${1:-40}"
 
 echo "================================================================================"

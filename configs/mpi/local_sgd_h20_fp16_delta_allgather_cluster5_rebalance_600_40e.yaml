@@ -62,3 +62,4 @@ logging:
   log_interval: 10
   output_dir: /home/icip/Ha/HeteroViT-Project/HeteroViT-MPI/results
   round_diagnostic: true
+

@@ -13,3 +13,4 @@ echo ">>> Strategy: tf.distribute.MirroredStrategy across 2 Titan Z GPUs"
 echo "=========================================================="
 
 python train.py --config configs/gpu/gpu_2titanz_b600_40e.yaml "$@"
+

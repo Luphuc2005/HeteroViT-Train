@@ -9,8 +9,23 @@ from src.metrics.logger import ExperimentLogger
 def get_optimizer(training_cfg: Dict[str, Any]) -> tf.keras.optimizers.Optimizer:
     """Builds optimizer from config."""
     opt_name = training_cfg.get("optimizer", "adamw").lower()
-    lr = float(training_cfg.get("learning_rate", 1e-3))
+    base_lr = float(training_cfg.get("learning_rate", 1e-3))
     wd = float(training_cfg.get("weight_decay", 1e-4))
+
+    lr_schedule = str(training_cfg.get("lr_schedule", "fixed")).lower()
+    if lr_schedule == "cosine":
+        epochs = int(training_cfg.get("epochs", 40))
+        global_batch = int(training_cfg.get("global_batch_size", training_cfg.get("batch_size", 600)))
+        steps_per_epoch = 45000 // max(global_batch, 1)
+        decay_steps = int(training_cfg.get("decay_steps", epochs * steps_per_epoch))
+        min_lr_ratio = float(training_cfg.get("min_lr_ratio", 0.01))
+        lr = tf.keras.optimizers.schedules.CosineDecay(
+            initial_learning_rate=base_lr,
+            decay_steps=decay_steps,
+            alpha=min_lr_ratio,
+        )
+    else:
+        lr = base_lr
 
     if opt_name == "adamw":
         if hasattr(tf.keras.optimizers, "AdamW"):

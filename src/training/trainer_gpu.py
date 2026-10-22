@@ -77,6 +77,11 @@ class GPUTrainer(BaseTrainer):
                 # Validation phase
                 val_loss, val_acc = self.evaluate(self.val_ds, self.val_steps)
 
+                try:
+                    curr_lr = float(self.optimizer.learning_rate.numpy())
+                except Exception:
+                    curr_lr = None
+
                 # Log metrics to CSV and file
                 self.logger.log_epoch(
                     epoch=epoch,
@@ -86,6 +91,7 @@ class GPUTrainer(BaseTrainer):
                     val_accuracy=val_acc,
                     epoch_time=epoch_time,
                     samples_per_sec=samples_per_sec,
+                    learning_rate=curr_lr,
                 )
 
                 # Save checkpoints
@@ -186,6 +192,11 @@ class MultiGPUTrainer(BaseTrainer):
             # Validation phase
             val_loss, val_acc = self.evaluate(self.dist_val_ds, self.val_steps)
 
+            try:
+                curr_lr = float(self.optimizer.learning_rate.numpy())
+            except Exception:
+                curr_lr = None
+
             # Log metrics to CSV and file
             self.logger.log_epoch(
                 epoch=epoch,
@@ -195,6 +206,7 @@ class MultiGPUTrainer(BaseTrainer):
                 val_accuracy=val_acc,
                 epoch_time=epoch_time,
                 samples_per_sec=samples_per_sec,
+                learning_rate=curr_lr,
             )
 
             # Save checkpoints

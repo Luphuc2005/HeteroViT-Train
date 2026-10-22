@@ -1,0 +1,44 @@
+experiment:
+  name: gpu_2titanz_b600_cosine_60e
+
+mode: gpu
+seed: 42
+
+dataset:
+  name: cifar10
+  data_dir: ./data/cifar10
+  num_classes: 10
+
+model:
+  name: vit_tiny
+  image_size: 32
+  patch_size: 4
+  embed_dim: 192
+  depth: 6
+  num_heads: 3
+  mlp_dim: 768
+  dropout: 0.1
+
+training:
+  epochs: 60
+  batch_size: 600          # Global batch size = 600
+  per_gpu_batch_size: 300  # 300 samples per Titan Z GPU
+  optimizer: adamw
+  learning_rate: 0.001
+  lr_schedule: cosine      # Cosine Annealing decay across 60 epochs (4500 steps)
+  min_lr_ratio: 0.01       # Minimum LR = 1e-5
+  weight_decay: 0.0001
+
+cpu:
+  intra_op_threads: 4
+  inter_op_threads: 2
+
+gpu:
+  num_gpus: 2
+  devices: ["/GPU:0", "/GPU:1"]
+  strategy: mirrored
+  memory_growth: true
+
+logging:
+  log_interval: 20
+  output_dir: ./results/gpu_baseline_pure
